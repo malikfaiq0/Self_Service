@@ -2,12 +2,6 @@ import streamlit as st
 import pyodbc
 import pandas as pd
 from datetime import datetime, timedelta
-import socket
-try:
-    with socket.create_connection(("DESKTOP-6UGP5LS", 1433), timeout=5):
-        st.success("✅ Port 1433 is reachable!")
-except Exception as e:
-    st.error(f"❌ Cannot reach SQL Server: {str(e)}")
 
 # Set page config must be first command
 st.set_page_config(layout="wide")
