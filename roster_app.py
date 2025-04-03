@@ -2,38 +2,35 @@ import streamlit as st
 import pyodbc
 import pandas as pd
 from datetime import datetime, timedelta
-from sshtunnel import SSHTunnelForwarder
+import os  # Required for environment variables
 
 # Set page config must be first command
 st.set_page_config(layout="wide")
 
-# Database connection function using Streamlit secrets
+# Database connection function
+# def get_db_connection():
+#     conn = pyodbc.connect(
+#         "DRIVER={SQL Server};"
+#         "SERVER=DESKTOP-6UGP5LS;"
+#         "DATABASE=RosterManagement;"
+#         "Trusted_Connection=yes;"
+#     )
+#     return conn
+
 def get_db_connection():
     try:
-        # 1. Establish SSH tunnel
-        tunnel = SSHTunnelForwarder(
-            ('72.14.201.61', 22),           # Your public IP
-            ssh_username="faiq",             # From whoami command
-            ssh_pkey="C:/Users/Faiq/.ssh/streamlit_key",  # Private key path
-            remote_bind_address=('localhost', 1433)  # Forward to local SQL
-        )
-        tunnel.start()
-        
-        # 2. Connect through the tunnel
         conn = pyodbc.connect(
             f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-            f"SERVER=127.0.0.1,{tunnel.local_bind_port};"
-            "DATABASE=RosterManagement;"
-            "UID=my_user;"
-            "PWD=1234;"
-            "Encrypt=yes;"
-            "TrustServerCertificate=yes;"
-            "MARS_Connection=yes;"
+            f"SERVER={os.getenv('DB_SERVER')};"
+            f"DATABASE={os.getenv('DB_NAME')};"
+            f"UID={os.getenv('DB_USERNAME')};"
+            f"PWD={os.getenv('DB_PASSWORD')};"
+            f"Connection Timeout=30;"
         )
-        return conn, tunnel  # Return both connection and tunnel object
+        return conn
     except Exception as e:
-        st.error(f"🚨 Connection failed: {str(e)}")
-        st.stop()
+        st.error(f"⚠️ Database connection failed: {str(e)}")
+        st.stop()  # Prevents the app from running without DB
 
 # Function to get all locations
 def get_locations():
