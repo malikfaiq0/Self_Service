@@ -6,15 +6,20 @@ from datetime import datetime, timedelta
 # Set page config must be first command
 st.set_page_config(layout="wide")
 
-# Database connection function
+# Database connection function using Streamlit secrets
 def get_db_connection():
-    conn = pyodbc.connect(
-        "DRIVER={SQL Server};"
-        "SERVER=DESKTOP-6UGP5LS;"
-        "DATABASE=RosterManagement;"
-        "Trusted_Connection=yes;"
-    )
-    return conn
+    try:
+        conn = pyodbc.connect(
+            "DRIVER={ODBC Driver 17 for SQL Server};"  # Updated driver name
+            f"SERVER={st.secrets['db']['server']};"
+            f"DATABASE={st.secrets['db']['database']};"
+            f"UID={st.secrets['db']['username']};"
+            f"PWD={st.secrets['db']['password']}"
+        )
+        return conn
+    except Exception as e:
+        st.error(f"Database connection failed: {str(e)}")
+        return None
 
 # Function to get all locations
 def get_locations():
