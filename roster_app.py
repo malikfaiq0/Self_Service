@@ -26,6 +26,7 @@ def get_db_connection():
             f"UID={os.getenv('DB_USERNAME')};"
             f"PWD={os.getenv('DB_PASSWORD')};"
             f"Connection Timeout=30;"
+            MultiSubnetFailover=True
         )
         return conn
     except Exception as e:
