@@ -2,6 +2,7 @@ import streamlit as st
 import pyodbc
 import pandas as pd
 from datetime import datetime, timedelta
+from sshtunnel import SSHTunnelForwarder
 
 # Set page config must be first command
 st.set_page_config(layout="wide")
@@ -9,28 +10,28 @@ st.set_page_config(layout="wide")
 # Database connection function using Streamlit secrets
 def get_db_connection():
     try:
+        # 1. Establish SSH tunnel
+        tunnel = SSHTunnelForwarder(
+            ('72.14.201.61', 22),           # Your public IP
+            ssh_username="faiq",             # From whoami command
+            ssh_pkey="C:/Users/Faiq/.ssh/streamlit_key",  # Private key path
+            remote_bind_address=('localhost', 1433)  # Forward to local SQL
+        )
+        tunnel.start()
+        
+        # 2. Connect through the tunnel
         conn = pyodbc.connect(
-            "DRIVER={ODBC Driver 17 for SQL Server};"
-            "SERVER=72.14.201.61,1433;"  # Must be public IP/DNS
+            f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+            f"SERVER=127.0.0.1,{tunnel.local_bind_port};"  # Connect via tunnel
             "DATABASE=RosterManagement;"
             "UID=my_user;"
             "PWD=1234;"
-            "Encrypt=yes;"
-            "TrustServerCertificate=no;"  # Production should use valid certs
-            "Timeout=30;"  # Increased timeout
-            "ApplicationIntent=ReadWrite;"
+            "Encrypt=yes;"           # Enable encryption
+            "TrustServerCertificate=yes;"  # For testing only
         )
-        return conn
+        return conn, tunnel  # Return both connection and tunnel object
     except Exception as e:
-        st.error(f"""
-        🚨 Critical Connection Error:
-        {str(e)}
-        
-        🔧 Troubleshooting Steps:
-        1. Verify SQL Server allows remote connections
-        2. Check firewall rules for port 1433
-        3. Confirm credentials are correct
-        """)
+        st.error(f"🚨 Connection failed: {str(e)}")
         st.stop()
 
 # Function to get all locations
