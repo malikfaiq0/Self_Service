@@ -11,14 +11,17 @@ def get_db_connection():
     try:
         conn = pyodbc.connect(
             "DRIVER={ODBC Driver 17 for SQL Server};"
-            "SERVER=DESKTOP-6UGP5LS;"  # Replace with your server
+            "SERVER=DESKTOP-6UGP5LS;"
             "DATABASE=RosterManagement;"
             "UID=my_user;"
             "PWD=1234;"
+            "Timeout=30;"  # Increase timeout to 30 seconds
+            "Encrypt=yes;"  # Required for some cloud deployments
+            "TrustServerCertificate=yes;"  # Bypass cert validation (dev only)
         )
         return conn
     except Exception as e:
-        st.error(f"Connection failed: {str(e)}")
+        st.error(f"🚨 Connection failed: {str(e)}")
         st.stop()
 
 # Function to get all locations
