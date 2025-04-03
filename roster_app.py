@@ -25,12 +25,13 @@ def get_db_connection():
             f"DATABASE={os.getenv('DB_NAME')};"
             f"UID={os.getenv('DB_USERNAME')};"
             f"PWD={os.getenv('DB_PASSWORD')};"
-            f"Connection Timeout=30;"
+            f"Connection Timeout=15;"
+            f"Encrypt=yes;"  # Critical for cloud connections
         )
         return conn
     except Exception as e:
-        st.error(f"⚠️ Database connection failed: {str(e)}")
-        st.stop()  # Prevents the app from running without DB
+        st.error(f"❌ Connection failed: Check firewall rules and SQL auth settings")
+        st.stop()
 
 # Function to get all locations
 def get_locations():
