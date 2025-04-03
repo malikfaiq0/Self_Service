@@ -8,29 +8,29 @@ import os  # Required for environment variables
 st.set_page_config(layout="wide")
 
 # Database connection function
-# def get_db_connection():
-#     conn = pyodbc.connect(
-#         "DRIVER={SQL Server};"
-#         "SERVER=DESKTOP-6UGP5LS;"
-#         "DATABASE=RosterManagement;"
-#         "Trusted_Connection=yes;"
-#     )
-#     return conn
-
 def get_db_connection():
-    try:
-        conn = pyodbc.connect(
-            f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-            f"SERVER={os.getenv('DB_SERVER')};"
-            f"DATABASE={os.getenv('DB_NAME')};"
-            f"UID={os.getenv('DB_USERNAME')};"
-            f"PWD={os.getenv('DB_PASSWORD')};"
-            f"Connection Timeout=30;"
-        )
-        return conn
-    except Exception as e:
-        st.error(f"⚠️ Database connection failed: {str(e)}")
-        st.stop()  # Prevents the app from running without DB
+    conn = pyodbc.connect(
+        "DRIVER={SQL Server};"
+        "SERVER=DESKTOP-6UGP5LS;"
+        "DATABASE=RosterManagement;"
+        "Trusted_Connection=yes;"
+    )
+    return conn
+
+# def get_db_connection():
+#     try:
+#         conn = pyodbc.connect(
+#             f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+#             f"SERVER={os.getenv('DB_SERVER')};"
+#             f"DATABASE={os.getenv('DB_NAME')};"
+#             f"UID={os.getenv('DB_USERNAME')};"
+#             f"PWD={os.getenv('DB_PASSWORD')};"
+#             f"Connection Timeout=30;"
+#         )
+#         return conn
+#     except Exception as e:
+#         st.error(f"⚠️ Database connection failed: {str(e)}")
+#         st.stop()  # Prevents the app from running without DB
 
 # Function to get all locations
 def get_locations():
