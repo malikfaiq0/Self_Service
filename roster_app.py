@@ -22,12 +22,13 @@ def get_db_connection():
         # 2. Connect through the tunnel
         conn = pyodbc.connect(
             f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-            f"SERVER=127.0.0.1,{tunnel.local_bind_port};"  # Connect via tunnel
+            f"SERVER=127.0.0.1,{tunnel.local_bind_port};"
             "DATABASE=RosterManagement;"
             "UID=my_user;"
             "PWD=1234;"
-            "Encrypt=yes;"           # Enable encryption
-            "TrustServerCertificate=yes;"  # For testing only
+            "Encrypt=yes;"
+            "TrustServerCertificate=yes;"
+            "MARS_Connection=yes;"
         )
         return conn, tunnel  # Return both connection and tunnel object
     except Exception as e:
