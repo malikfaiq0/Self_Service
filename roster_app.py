@@ -16,21 +16,21 @@ st.set_page_config(layout="wide")
 #         "Trusted_Connection=yes;"
 #     )
 #     return conn
-
 def get_db_connection():
     try:
         conn = pyodbc.connect(
-            f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-            f"SERVER={os.getenv('DB_SERVER')};"
-            f"DATABASE={os.getenv('DB_NAME')};"
-            f"UID={os.getenv('DB_USERNAME')};"
-            f"PWD={os.getenv('DB_PASSWORD')};"
-            f"Connection Timeout=30;"
-            MultiSubnetFailover=True
+            """DRIVER={ODBC Driver 17 for SQL Server};
+            SERVER=""" + os.getenv("DB_SERVER") + """;
+            DATABASE=""" + os.getenv("DB_NAME") + """;
+            UID=""" + os.getenv("DB_USERNAME") + """;
+            PWD=""" + os.getenv("DB_PASSWORD") + """;
+            Connection Timeout=30;
+            MultiSubnetFailover=True;
+            """
         )
         return conn
-    except Exception as e:
-        st.error(f"⚠️ Database connection failed: {str(e)}")
+    except pyodbc.Error as e:
+        st.error(f"⚠️ Database connection failed: {e}")
         st.stop()  # Prevents the app from running without DB
 
 # Function to get all locations
