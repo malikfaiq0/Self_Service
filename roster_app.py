@@ -17,21 +17,36 @@ st.set_page_config(layout="wide")
 #     )
 #     return conn
 
+# Explicit connection details
+DB_SERVER = "39.34.145.97,1433"
+DB_NAME = "RosterManagement"
+DB_USERNAME = "myuser"
+DB_PASSWORD = "!Mynameisapp"
+
 def get_db_connection():
     try:
         conn = pyodbc.connect(
             f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-            f"SERVER={os.getenv('DB_SERVER')};"
-            f"DATABASE={os.getenv('DB_NAME')};"
-            f"UID={os.getenv('DB_USERNAME')};"
-            f"PWD={os.getenv('DB_PASSWORD')};"
+            f"SERVER={DB_SERVER};"
+            f"DATABASE={DB_NAME};"
+            f"UID={DB_USERNAME};"
+            f"PWD={DB_PASSWORD};"
+            f"TrustServerCertificate=yes;"  # Helps with SSL issues
             f"Connection Timeout=30;"
         )
         return conn
+    except pyodbc.InterfaceError:
+        st.error("⚠️ Unable to connect to the database. Please check the server address and firewall settings.")
+    except pyodbc.OperationalError:
+        st.error("⚠️ Database authentication failed. Please verify the username and password.")
     except Exception as e:
         st.error(f"⚠️ Database connection failed: {str(e)}")
-        st.stop()  # Prevents the app from running without DB
+    st.stop()
 
+# Test connection
+conn = get_db_connection()
+if conn:
+    st.success("✅ Connected to the database successfully!")
 # Function to get all locations
 def get_locations():
     conn = get_db_connection()
