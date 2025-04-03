@@ -18,6 +18,7 @@ st.set_page_config(layout="wide")
 #     return conn
 
 def get_db_connection():
+    try:
         conn = pyodbc.connect(
             f"DRIVER={{ODBC Driver 17 for SQL Server}};"
             f"SERVER={os.getenv('DB_SERVER')};"
@@ -27,7 +28,9 @@ def get_db_connection():
             f"Connection Timeout=30;"
         )
         return conn
- 
+    except Exception as e:
+        st.error(f"⚠️ Database connection failed: {str(e)}")
+        st.stop()  # Prevents the app from running without DB
 
 # Function to get all locations
 def get_locations():
