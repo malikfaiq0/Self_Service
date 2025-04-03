@@ -18,20 +18,16 @@ st.set_page_config(layout="wide")
 #     return conn
 
 def get_db_connection():
-    try:
         conn = pyodbc.connect(
             f"DRIVER={{ODBC Driver 17 for SQL Server}};"
             f"SERVER={os.getenv('DB_SERVER')};"
             f"DATABASE={os.getenv('DB_NAME')};"
             f"UID={os.getenv('DB_USERNAME')};"
             f"PWD={os.getenv('DB_PASSWORD')};"
-            f"Connection Timeout=15;"
-            f"Encrypt=yes;"  # Critical for cloud connections
+            f"Connection Timeout=30;"
         )
         return conn
-    except Exception as e:
-        st.error(f"❌ Connection failed: Check firewall rules and SQL auth settings")
-        st.stop()
+ 
 
 # Function to get all locations
 def get_locations():
