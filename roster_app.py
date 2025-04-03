@@ -11,17 +11,26 @@ def get_db_connection():
     try:
         conn = pyodbc.connect(
             "DRIVER={ODBC Driver 17 for SQL Server};"
-            "SERVER=DESKTOP-6UGP5LS;"
+            "SERVER=your-public-ip,1433;"  # Must be public IP/DNS
             "DATABASE=RosterManagement;"
             "UID=my_user;"
             "PWD=1234;"
-            "Timeout=30;"  # Increase timeout to 30 seconds
-            "Encrypt=yes;"  # Required for some cloud deployments
-            "TrustServerCertificate=yes;"  # Bypass cert validation (dev only)
+            "Encrypt=yes;"
+            "TrustServerCertificate=no;"  # Production should use valid certs
+            "Timeout=30;"  # Increased timeout
+            "ApplicationIntent=ReadWrite;"
         )
         return conn
     except Exception as e:
-        st.error(f"🚨 Connection failed: {str(e)}")
+        st.error(f"""
+        🚨 Critical Connection Error:
+        {str(e)}
+        
+        🔧 Troubleshooting Steps:
+        1. Verify SQL Server allows remote connections
+        2. Check firewall rules for port 1433
+        3. Confirm credentials are correct
+        """)
         st.stop()
 
 # Function to get all locations
