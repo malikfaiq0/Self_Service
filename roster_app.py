@@ -22,7 +22,7 @@ load_css()
 
 # Database connection function
 
-DB_SERVER = "39.34.150.71"
+DB_SERVER = "100.100.85.30"
 DB_NAME = "RosterManagement"
 DB_USERNAME = "my_user"
 DB_PASSWORD = "!Mynameisapp"
