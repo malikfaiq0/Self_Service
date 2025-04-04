@@ -22,7 +22,9 @@ load_css()
 
 # Database connection function
 
-DB_SERVER = "39.34.150.71"
+DB_SERVER = "0.tcp.in.ngrok.io"  # Use the ngrok public address
+DB_PORT = "14927"  # Use the ngrok-generated port
+
 DB_NAME = "RosterManagement"
 DB_USERNAME = "my_user"
 DB_PASSWORD = "!Mynameisapp"
@@ -30,12 +32,13 @@ DB_PASSWORD = "!Mynameisapp"
 def get_db_connection():
     conn = pyodbc.connect(
         f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-        f"SERVER={DB_SERVER},1433;"
+        f"SERVER={DB_SERVER},{DB_PORT};"  # Use ngrok's TCP tunnel address and port
         f"DATABASE={DB_NAME};"
         f"UID={DB_USERNAME};"
         f"PWD={DB_PASSWORD};"
     )
     return conn
+
 # Test connection
 conn = get_db_connection()
 if conn:
