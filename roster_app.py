@@ -2,7 +2,8 @@ import streamlit as st
 import pyodbc
 import pandas as pd
 from datetime import datetime, timedelta
-import os  # Required for environment variables
+import os
+from contextlib import contextmanager
 
 # Set page config must be first command
 st.set_page_config(
@@ -17,11 +18,9 @@ def load_css():
     with open("style.css", "r", encoding="utf-8", errors="ignore") as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-
 load_css()
 
-# Database connection function
-
+# Database configuration
 DB_SERVER = "0.tcp.in.ngrok.io"  # Use the ngrok public address
 DB_PORT = "14927"  # Use the ngrok-generated port
 
@@ -29,7 +28,30 @@ DB_NAME = "RosterManagement"
 DB_USERNAME = "my_user"
 DB_PASSWORD = "!Mynameisapp"
 
-def get_db_connection():
+# Special locations mapping
+SPECIAL_LOCATIONS = {
+    "thomas street": "Thomas Street, Wollongong",
+    "albert street": "Albert Street, Erskinville",
+    "cecil street": "Cecil Street, Guildford",
+    "charles street": "Charles Street, Liverpool",
+    "cope street": "Cope Street, Redfern",
+    "copeland street": "Copeland Street, Liverpool",
+    "fisher street": "Fisher Street, Petersham",
+    "goulburn street": "Goulburn Street, Liverpool",
+    "todd street": "Todd Street, Merrylands",
+    "vine street": "Vine Street, Darlington",
+    "89 old south head road": "89 Old South Head Road, Bondi Junction",
+    "united for care": "United For Care",
+    "bell lane": "Bell Lane, Randwick",
+    "bexley": "Bexley",
+    "blacktown": "Blacktown",
+    "cared global pty ltd": "Cared Global Pty Ltd",
+    "castlereagh st": "Castlereagh St"
+}
+
+# Database connection manager
+@contextmanager
+def db_connection():
     conn = pyodbc.connect(
         f"DRIVER={{ODBC Driver 17 for SQL Server}};"
         f"SERVER={DB_SERVER},{DB_PORT};"  # Use ngrok's TCP tunnel address and port
@@ -37,138 +59,146 @@ def get_db_connection():
         f"UID={DB_USERNAME};"
         f"PWD={DB_PASSWORD};"
     )
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 # Test connection
-conn = get_db_connection()
-if conn:
-    st.sidebar.success("✅ Connected to the database successfully!")
+try:
+    with db_connection() as conn:
+        st.sidebar.success("✅ Connected to the database successfully!")
+except Exception as e:
+    st.sidebar.error(f"❌ Database connection failed: {str(e)}")
 
-# Function to get all locations
+# Helper function to normalize location names
+def normalize_location(location):
+    if not location:
+        return None
+    loc_lower = location.lower()
+    for key, value in SPECIAL_LOCATIONS.items():
+        if key in loc_lower:
+            return value
+    return location
+
+# Cached data functions
+@st.cache_data(ttl=3600)
+def get_location_participant_mapping():
+    with db_connection() as conn:
+        query = """
+        SELECT DISTINCT 
+            maica__Participant_Location__c as location,
+            maica__Participants__c as participant
+        FROM Appointments
+        WHERE maica__Participants__c LIKE '%Roster%'
+        AND maica__Participant_Location__c IS NOT NULL
+        """
+        df = pd.read_sql(query, conn)
+    return df.set_index('location')['participant'].to_dict()
+
+@st.cache_data(ttl=3600)
+def get_locations_with_participants():
+    with db_connection() as conn:
+        query = """
+        SELECT DISTINCT 
+            maica__Participant_Location__c as location,
+            maica__Participants__c as participant_name
+        FROM Appointments
+        WHERE maica__Participants__c LIKE '%Roster%'
+        AND maica__Participant_Location__c IS NOT NULL
+        ORDER BY maica__Participants__c
+        """
+        df = pd.read_sql(query, conn)
+    
+    # Create list of dictionaries with display names and actual locations
+    locations = []
+    for _, row in df.iterrows():
+        locations.append({
+            'display_name': row['participant_name'],
+            'location': row['location']
+        })
+    
+    return locations
+
+@st.cache_data(ttl=3600)
 def get_locations():
-    conn = get_db_connection()
-    query = "SELECT DISTINCT maica__Participant_Location__c FROM Appointments WHERE maica__Participant_Location__c IS NOT NULL"
-    df = pd.read_sql(query, conn)
-    conn.close()
-    return df['maica__Participant_Location__c'].tolist()
+    mapping = get_location_participant_mapping()
+    
+    with db_connection() as conn:
+        query = """
+        SELECT DISTINCT maica__Participant_Location__c 
+        FROM Appointments 
+        WHERE maica__Participant_Location__c IS NOT NULL
+        AND maica__Participants__c LIKE '%Roster%'
+        """
+        df = pd.read_sql(query, conn)
+    
+    # Create list of tuples: (display_name, actual_location)
+    locations = []
+    for loc in df['maica__Participant_Location__c'].tolist():
+        display_name = mapping.get(loc, loc)  # Default to location if no participant found
+        locations.append((display_name, loc))
+    
+    return locations
 
-# Function to get resources by location, filtered by employment type
-def get_resources_by_location(location, employment_type='All'):
-    conn = get_db_connection()
-    
-    # Special locations that should be matched by core part of the address
-    special_locations = [
-        "Thomas Street, Wollongong",  # Changed from full address to core part
-        "Albert Street, Erskinville",
-        "Cecil Street, Guildford",
-        "Charles Street, Liverpool",
-        "Cope Street, Redfern",
-        "Copeland Street, Liverpool",
-        "Fisher Street, Petersham",
-        "Goulburn Street, Liverpool",
-        "Todd Street, Merrylands",
-        "Vine Street, Darlington",
-        "89 Old South Head Road, Bondi Junction",
-        "United For Care",
-        "Bell Lane, Randwick",
-        "Bexley",
-        "Blacktown",
-        "Cared Global Pty Ltd",
-        "Castlereagh St"
-    ]
-    
-    core_location = None
-    for special_loc in special_locations:
-        if special_loc.lower() in location.lower():
-            core_location = special_loc
-            break
-            
-    if core_location:
-        if employment_type == 'All':
-            query = """
-            SELECT DISTINCT r.fullName as resource_name
-            FROM Resources r
-            WHERE r.primaryLocation LIKE '%' + ? + '%'
-            AND r.Status = 'Active'
-            AND r.jobTitle LIKE '%Disability Support Worker%'
-            ORDER BY r.fullName
-            """
-            params = [core_location]
-        else:
-            query = """
-            SELECT DISTINCT r.fullName as resource_name
-            FROM Resources r
-            WHERE r.primaryLocation LIKE '%' + ? + '%'
-            AND r.employmentType = ?
-            AND r.Status = 'Active'
-            AND r.jobTitle LIKE '%Disability Support Worker%'
-            ORDER BY r.fullName
-            """
-            params = [core_location, employment_type]
-    else:
-        if employment_type == 'All':
-            query = """
-            SELECT DISTINCT r.fullName as resource_name
-            FROM Resources r
-            WHERE r.primaryLocation = ?
-            AND r.Status = 'Active'
-            AND r.jobTitle LIKE '%Disability Support Worker%'
-            ORDER BY r.fullName
-            """
-            params = [location]
-        else:
-            query = """
-            SELECT DISTINCT r.fullName as resource_name
-            FROM Resources r
-            WHERE r.primaryLocation = ?
-            AND r.employmentType = ?
-            AND r.Status = 'Active'
-            AND r.jobTitle LIKE '%Disability Support Worker%'
-            ORDER BY r.fullName
-            """
-            params = [location, employment_type]
-    
-    df = pd.read_sql(query, conn, params=params)
-    conn.close()
+@st.cache_data(ttl=3600)
+def get_all_resources():
+    """Get all active resources with caching"""
+    with db_connection() as conn:
+        query = """
+        SELECT DISTINCT 
+            r.fullName as resource_name, 
+            r.primaryLocation,
+            r.employmentType
+        FROM Resources r
+        WHERE r.Status = 'Active'
+        AND r.jobTitle LIKE '%Disability Support Worker%'
+        ORDER BY r.fullName
+        """
+        df = pd.read_sql(query, conn)
     
     if not df.empty:
-        # Normalize spaces in the returned names
-        return [' '.join(name.split()) for name in df['resource_name'].tolist()]
-    else:
-        return []
+        df['resource_name'] = df['resource_name'].apply(lambda x: ' '.join(x.split()))
+    return df
 
-# Function to get appointments by resource and location
+@st.cache_data(ttl=600)  # Cache for 10 minutes since this changes more frequently
+def get_resources_by_location(location, employment_type='All'):
+    norm_location = normalize_location(location)
+    
+    with db_connection() as conn:
+        if employment_type == 'All':
+            query = """
+            SELECT DISTINCT r.fullName as resource_name
+            FROM Resources r
+            WHERE r.primaryLocation LIKE '%' + ? + '%'
+            AND r.Status = 'Active'
+            AND r.jobTitle LIKE '%Disability Support Worker%'
+            ORDER BY r.fullName
+            """
+            params = [norm_location]
+        else:
+            query = """
+            SELECT DISTINCT r.fullName as resource_name
+            FROM Resources r
+            WHERE r.primaryLocation LIKE '%' + ? + '%'
+            AND r.employmentType = ?
+            AND r.Status = 'Active'
+            AND r.jobTitle LIKE '%Disability Support Worker%'
+            ORDER BY r.fullName
+            """
+            params = [norm_location, employment_type]
+        
+        df = pd.read_sql(query, conn, params=params)
+    
+    if not df.empty:
+        return [' '.join(name.split()) for name in df['resource_name'].tolist()]
+    return []
+
+@st.cache_data(ttl=300)  # Short cache since appointments change frequently
 def get_appointments_by_resource_and_location(resource, location):
-    conn = get_db_connection()
+    norm_location = normalize_location(location)
     
-    # Handle special locations
-    special_locations = [
-        "Albert Street, Erskinville",
-        "Cecil Street, Guildford",
-        "Charles Street, Liverpool",
-        "Cope Street, Redfern",
-        "Copeland Street, Liverpool",
-        "Fisher Street, Petersham",
-        "Goulburn Street, Liverpool",
-        "Thomas Street, Wollongong",
-        "Todd Street, Merrylands",
-        "Vine Street, Darlington",
-        "89 Old South Head Road, Bondi Junction",
-        "United For Care",
-        "Bell Lane, Randwick",
-        "Bexley",
-        "Blacktown",
-        "Cared Global Pty Ltd",
-        "Castlereagh St"
-    ]
-    
-    core_location = None
-    for special_loc in special_locations:
-        if special_loc in location:
-            core_location = special_loc
-            break
-    
-    if core_location:
+    with db_connection() as conn:
         query = """
         SELECT 
             Id AS AppointmentID,
@@ -176,31 +206,16 @@ def get_appointments_by_resource_and_location(resource, location):
             CONVERT(VARCHAR, maica__Scheduled_Start__c, 120) AS StartDateTime,
             CONVERT(VARCHAR, maica__Scheduled_End__c, 120) AS EndDateTime,
             maica__Scheduled_Duration_Minutes__c AS DurationMinutes,
-            maica__Participant_Location__c AS Location
+            maica__Participants__c AS Participant
         FROM Appointments
         WHERE maica__Resources__c = ?
         AND maica__Participant_Location__c LIKE '%' + ? + '%'
+        AND maica__Participants__c LIKE '%Roster%'
         ORDER BY maica__Scheduled_Start__c
         """
-        params = [resource, core_location]
-    else:
-        query = """
-        SELECT 
-            Id AS AppointmentID,
-            Name,
-            CONVERT(VARCHAR, maica__Scheduled_Start__c, 120) AS StartDateTime,
-            CONVERT(VARCHAR, maica__Scheduled_End__c, 120) AS EndDateTime,
-            maica__Scheduled_Duration_Minutes__c AS DurationMinutes,
-            maica__Participant_Location__c AS Location
-        FROM Appointments
-        WHERE maica__Resources__c = ?
-        AND maica__Participant_Location__c = ?
-        ORDER BY maica__Scheduled_Start__c
-        """
-        params = [resource, location]
-    
-    df = pd.read_sql(query, conn, params=params)
-    conn.close()
+        params = [resource, norm_location]
+        
+        df = pd.read_sql(query, conn, params=params)
     
     if not df.empty:
         df['DurationHours'] = df['DurationMinutes'] / 60
@@ -209,37 +224,11 @@ def get_appointments_by_resource_and_location(resource, location):
         df['DisplayEnd'] = pd.to_datetime(df['EndDateTime']).dt.strftime('%m/%d/%Y %I:%M %p')
     return df
 
+@st.cache_data(ttl=600)
 def get_resource_counts_by_location(location):
-    conn = get_db_connection()
-     # Handle special locations
-    special_locations = [
-        "Albert Street, Erskinville",
-        "Cecil Street, Guildford",
-        "Charles Street, Liverpool",
-        "Cope Street, Redfern",
-        "Copeland Street, Liverpool",
-        "Fisher Street, Petersham",
-        "Goulburn Street, Liverpool",
-        "Thomas Street, Wollongong",
-        "Todd Street, Merrylands",
-        "Vine Street, Darlington",
-        "89 Old South Head Road, Bondi Junction",
-        "United For Care",
-        "Bell Lane, Randwick",
-        "Bexley",
-        "Blacktown",
-        "Cared Global Pty Ltd",
-        "Castlereagh St"
-    ]
+    norm_location = normalize_location(location)
     
-    # Handle special locations (same as before)
-    core_location = None
-    for special_loc in special_locations:
-        if special_loc.lower() in location.lower():
-            core_location = special_loc
-            break
-            
-    if core_location:
+    with db_connection() as conn:
         query = """
         SELECT 
             employmentType,
@@ -250,93 +239,53 @@ def get_resource_counts_by_location(location):
         AND jobTitle LIKE '%Disability Support Worker%'
         GROUP BY employmentType
         """
-        params = [core_location]
-    else:
-        query = """
-        SELECT 
-            employmentType,
-            COUNT(*) as resource_count
-        FROM Resources
-        WHERE primaryLocation = ?
-        AND Status = 'Active'
-        AND jobTitle LIKE '%Disability Support Worker%'
-        GROUP BY employmentType
-        """
-        params = [location]
-    
-    df = pd.read_sql(query, conn, params=params)
-    conn.close()
+        params = [norm_location]
+        
+        df = pd.read_sql(query, conn, params=params)
     return df
 
-
-# Function to get resource details
+@st.cache_data(ttl=600)
 def get_resource_details(resource_name):
-    conn = get_db_connection()
-    # Normalize the resource name by replacing multiple spaces with single space
     normalized_name = ' '.join(resource_name.split())
     
-    query = """
-    SELECT 
-        id,
-        fullName,
-        employmentType,
-        hoursPerWeek,
-        primaryLocation
-    FROM Resources
-    WHERE REPLACE(REPLACE(fullName, '  ', ' '), '  ', ' ') = ?
-    """
-    df = pd.read_sql(query, conn, params=[normalized_name])
-    conn.close()
+    with db_connection() as conn:
+        query = """
+        SELECT 
+            id,
+            fullName,
+            employmentType,
+            hoursPerWeek,
+            primaryLocation
+        FROM Resources
+        WHERE REPLACE(REPLACE(fullName, '  ', ' '), '  ', ' ') = ?
+        """
+        df = pd.read_sql(query, conn, params=[normalized_name])
     
     if not df.empty:
+        employment_type = df.iloc[0]['employmentType'] or 'Unknown'
+        hours_per_week = df.iloc[0]['hoursPerWeek'] if employment_type != 'Casual' else 0
+        
         return {
             'id': df.iloc[0]['id'],
             'fullName': df.iloc[0]['fullName'],
-            'employmentType': df.iloc[0]['employmentType'] or 'Unknown',
-            'hoursPerWeek': df.iloc[0]['hoursPerWeek'] or 38,
+            'employmentType': employment_type,
+            'hoursPerWeek': hours_per_week,
             'primaryLocation': df.iloc[0]['primaryLocation'] or 'Unknown'
         }
     else:
-        # Return default values if resource not found
         return {
             'id': None,
             'fullName': resource_name,
             'employmentType': 'Unknown',
-            'hoursPerWeek': 38,  # Default standard hours
+            'hoursPerWeek': 0,
             'primaryLocation': 'Unknown'
         }
 
+@st.cache_data(ttl=300)
 def get_unassigned_appointments(location):
-    conn = get_db_connection()
+    norm_location = normalize_location(location)
     
-    # Handle special locations
-    special_locations = [
-        "Albert Street, Erskinville",
-        "Cecil Street, Guildford",
-        "Charles Street, Liverpool",
-        "Cope Street, Redfern",
-        "Copeland Street, Liverpool",
-        "Fisher Street, Petersham",
-        "Goulburn Street, Liverpool",
-        "Thomas Street, Wollongong",
-        "Todd Street, Merrylands",
-        "Vine Street, Darlington",
-        "89 Old South Head Road, Bondi Junction",
-        "United For Care",
-        "Bell Lane, Randwick",
-        "Bexley",
-        "Blacktown",
-        "Cared Global Pty Ltd",
-        "Castlereagh St"
-    ]
-    
-    core_location = None
-    for special_loc in special_locations:
-        if special_loc in location:
-            core_location = special_loc
-            break
-    
-    if core_location:
+    with db_connection() as conn:
         query = """
         SELECT 
             Id AS AppointmentID,
@@ -344,31 +293,16 @@ def get_unassigned_appointments(location):
             CONVERT(VARCHAR, maica__Scheduled_Start__c, 120) AS StartDateTime,
             CONVERT(VARCHAR, maica__Scheduled_End__c, 120) AS EndDateTime,
             maica__Scheduled_Duration_Minutes__c AS DurationMinutes,
-            maica__Participant_Location__c AS Location
+            maica__Participants__c AS Participant
         FROM Appointments
         WHERE (maica__Resources__c IS NULL OR maica__Resources__c = 'NULL')
         AND maica__Participant_Location__c LIKE '%' + ? + '%'
+        AND maica__Participants__c LIKE '%Roster%'
         ORDER BY maica__Scheduled_Start__c
         """
-        params = [core_location]
-    else:
-        query = """
-        SELECT 
-            Id AS AppointmentID,
-            Name,
-            CONVERT(VARCHAR, maica__Scheduled_Start__c, 120) AS StartDateTime,
-            CONVERT(VARCHAR, maica__Scheduled_End__c, 120) AS EndDateTime,
-            maica__Scheduled_Duration_Minutes__c AS DurationMinutes,
-            maica__Participant_Location__c AS Location
-        FROM Appointments
-        WHERE (maica__Resources__c IS NULL OR maica__Resources__c = 'NULL')
-        AND maica__Participant_Location__c = ?
-        ORDER BY maica__Scheduled_Start__c
-        """
-        params = [location]
-    
-    df = pd.read_sql(query, conn, params=params)
-    conn.close()
+        params = [norm_location]
+        
+        df = pd.read_sql(query, conn, params=params)
     
     if not df.empty:
         df['DurationHours'] = df['DurationMinutes'] / 60
@@ -377,80 +311,33 @@ def get_unassigned_appointments(location):
         df['DisplayEnd'] = pd.to_datetime(df['EndDateTime']).dt.strftime('%m/%d/%Y %I:%M %p')
     return df
 
-
-def get_all_resources():
-    conn = get_db_connection()
-    query = """
-    SELECT DISTINCT r.fullName as resource_name, r.primaryLocation
-    FROM Resources r
-    WHERE r.Status = 'Active'
-    AND r.jobTitle LIKE '%Disability Support Worker%'
-    ORDER BY r.fullName
-    """
-    df = pd.read_sql(query, conn)
-    conn.close()
-    
-    if not df.empty:
-        # Normalize spaces in the returned names
-        df['resource_name'] = df['resource_name'].apply(lambda x: ' '.join(x.split()))
-        return df
-    else:
-        return pd.DataFrame()
-
 def assign_resource_to_appointment(appointment_id, resource_name):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        # Normalize the resource name
-        normalized_name = ' '.join(resource_name.split())
-        
-        update_query = """
-        UPDATE Appointments
-        SET maica__Resources__c = ?
-        WHERE Id = ?
-        """
-        cursor.execute(update_query, (normalized_name, appointment_id))
-        conn.commit()
-        return True
-    except Exception as e:
-        conn.rollback()
-        st.error(f"Error assigning resource: {str(e)}")
-        return False
-    finally:
-        conn.close()
+    normalized_name = ' '.join(resource_name.split())
     
-# Function to calculate constraints for a resource at a location
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            update_query = """
+            UPDATE Appointments
+            SET maica__Resources__c = ?
+            WHERE Id = ?
+            """
+            cursor.execute(update_query, (normalized_name, appointment_id))
+            conn.commit()
+            
+            # Clear relevant caches after update
+            st.cache_data.clear()
+            return True
+        except Exception as e:
+            conn.rollback()
+            st.error(f"Error assigning resource: {str(e)}")
+            return False
+
+@st.cache_data(ttl=300)
 def calculate_constraints(resource_name, location):
-    conn = get_db_connection()
+    norm_location = normalize_location(location)
     
-    # Handle special locations
-    special_locations = [
-        "Albert Street, Erskinville",
-        "Cecil Street, Guildford",
-        "Charles Street, Liverpool",
-        "Cope Street, Redfern",
-        "Copeland Street, Liverpool",
-        "Fisher Street, Petersham",
-        "Goulburn Street, Liverpool",
-        "Thomas Street, Wollongong",
-        "Todd Street, Merrylands",
-        "Vine Street, Darlington",
-        "89 Old South Head Road, Bondi Junction",
-        "United For Care",
-        "Bell Lane, Randwick",
-        "Bexley",
-        "Blacktown",
-        "Cared Global Pty Ltd",
-        "Castlereagh St"
-    ]
-    
-    core_location = None
-    for special_loc in special_locations:
-        if special_loc in location:
-            core_location = special_loc
-            break
-    
-    if core_location:
+    with db_connection() as conn:
         query = """
         SELECT 
             a.Id AS AppointmentID,
@@ -462,23 +349,9 @@ def calculate_constraints(resource_name, location):
         AND a.maica__Participant_Location__c LIKE '%' + ? + '%'
         ORDER BY a.maica__Scheduled_Start__c
         """
-        params = [resource_name, core_location]
-    else:
-        query = """
-        SELECT 
-            a.Id AS AppointmentID,
-            a.maica__Scheduled_Start__c AS StartDateTime,
-            a.maica__Scheduled_End__c AS EndDateTime,
-            a.maica__Scheduled_Duration_Minutes__c AS DurationMinutes
-        FROM Appointments a
-        WHERE a.maica__Resources__c = ?
-        AND a.maica__Participant_Location__c = ?
-        ORDER BY a.maica__Scheduled_Start__c
-        """
-        params = [resource_name, location]
-    
-    df = pd.read_sql(query, conn, params=params)
-    conn.close()
+        params = [resource_name, norm_location]
+        
+        df = pd.read_sql(query, conn, params=params)
     
     if df.empty:
         return {
@@ -563,21 +436,33 @@ def main():
         if 'selected_employment_type' not in st.session_state:
             st.session_state.selected_employment_type = 'All'
 
-        # Step 1: Select location with unique key
-        locations = get_locations()
-        new_location = st.selectbox(
-            "Select Location:", 
-            locations,
+        # Get locations with participant names for display
+        location_options = get_locations_with_participants()
+        
+        # Create options for selectbox
+        options = [loc['display_name'] for loc in location_options]
+        
+        # Show participant names in dropdown
+        selected_display = st.selectbox(
+            "Select Roster:", 
+            options=options,
             key="main_unique_location_selectbox"
         )
         
+        # Find the corresponding actual location
+        selected_location = None
+        for loc in location_options:
+            if loc['display_name'] == selected_display:
+                selected_location = loc['location']
+                break
+        
         # Update session state when location changes
-        if new_location != st.session_state.selected_location:
-            st.session_state.selected_location = new_location
+        if selected_location and selected_location != st.session_state.selected_location:
+            st.session_state.selected_location = selected_location
             st.session_state.selected_resource = None  # Reset resource selection
             st.rerun()
 
-    # Main content area
+    # Main content
     st.markdown("""
     <div class="main-header">
         <h1>📊 Roster Management Pro</h1>
@@ -622,8 +507,11 @@ def main():
                 st.session_state.selected_resource = None
                 st.rerun()
 
-        # Step 2: Get resources for selected location
-        resources = get_resources_by_location(st.session_state.selected_location, st.session_state.selected_employment_type)
+        # Get resources for selected location and employment type
+        resources = get_resources_by_location(
+            st.session_state.selected_location, 
+            st.session_state.selected_employment_type
+        )
 
         if resources:
             # Use tabs to separate assigned and unassigned appointments
@@ -645,7 +533,7 @@ def main():
                     st.rerun()
                 
                 if st.session_state.selected_resource:
-                    # Get appointments for selected resource at selected location
+                    # Get appointments for selected resource
                     appointments = get_appointments_by_resource_and_location(
                         st.session_state.selected_resource, 
                         st.session_state.selected_location
@@ -659,24 +547,13 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # Initialize constraints with default values
-                        constraints = {
-                            'max_consecutive_days': 0,
-                            'min_hours_between_shifts': 'N/A',
-                            'week1_hours': 0,
-                            'week2_hours': 0,
-                            'total_hours': 0,
-                            'shift_details': []
-                        }
+                        # Get constraints
+                        constraints = calculate_constraints(
+                            st.session_state.selected_resource, 
+                            st.session_state.selected_location
+                        )
                         
-                        # Calculate constraints if we have appointments
-                        if len(appointments) > 0:
-                            constraints = calculate_constraints(
-                                st.session_state.selected_resource, 
-                                st.session_state.selected_location
-                            )
-                        
-                        # Display resource details in a card
+                        # Display resource details
                         resource_details = get_resource_details(st.session_state.selected_resource)
                         
                         st.markdown("""
@@ -795,7 +672,7 @@ def main():
                                     <div class="appointment-actions">
                             """, unsafe_allow_html=True)
                             
-                            # Toggle button for expand/collapse with unique key
+                            # Toggle button for expand/collapse
                             if st.button("📝 Details", key=f"expand_assigned_{appt_id}"):
                                 if st.session_state.expanded_appointment == appt_id:
                                     st.session_state.expanded_appointment = None
@@ -814,9 +691,9 @@ def main():
                                     st.markdown("""
                                     <div class='appointment-card-body'>
                                         <div class="appointment-detail">
-                                            <span class="detail-icon">📍</span>
-                                            <span class="detail-label">Location:</span>
-                                            <span class="detail-value">{location}</span>
+                                            <span class="detail-icon">👤</span>
+                                            <span class="detail-label">Participant:</span>
+                                            <span class="detail-value">{participant}</span>
                                         </div>
                                         <div class="appointment-detail">
                                             <span class="detail-icon">⏰</span>
@@ -835,7 +712,7 @@ def main():
                                         </div>
                                     </div>
                                     """.format(
-                                        location=row['Location'],
+                                        participant=row['Participant'],
                                         displayStart=row['DisplayStart'],
                                         displayEnd=row['DisplayEnd'],
                                         durationHours=row['DurationHours']
@@ -869,8 +746,11 @@ def main():
                     
                     # Get all resources (not filtered by location)
                     all_resources_df = get_all_resources()
-                    # Get local resources (same as before)
-                    local_resources = get_resources_by_location(st.session_state.selected_location, st.session_state.selected_employment_type)
+                    # Get local resources
+                    local_resources = get_resources_by_location(
+                        st.session_state.selected_location, 
+                        st.session_state.selected_employment_type
+                    )
                     
                     for idx, row in unassigned_appointments.iterrows():
                         appt_id = row['AppointmentID']
@@ -882,23 +762,33 @@ def main():
                             st.session_state[f"assigned_{appt_id}"] = False
                             st.session_state[f"selected_resource_{appt_id}"] = None
                         
+                        # Check if appointment is already assigned
+                        with db_connection() as conn:
+                            check_query = "SELECT maica__Resources__c FROM Appointments WHERE Id = ?"
+                            assigned_to = pd.read_sql(check_query, conn, params=[appt_id]).iloc[0,0]
+                        
+                        if assigned_to and not st.session_state[f"assigned_{appt_id}"]:
+                            st.session_state[f"assigned_{appt_id}"] = True
+                            st.session_state[f"selected_resource_{appt_id}"] = assigned_to
+                        
                         with st.expander(f"{row['Name']} - {row['DisplayStart']} to {row['DisplayEnd']} ({row['DurationHours']:.2f}h)", expanded=True):
+                            # Show days and times in detail view
                             st.markdown("""
                             <div class="unassigned-details">
                                 <div class="appointment-detail">
-                                    <span class="detail-icon">📍</span>
-                                    <span class="detail-label">Location:</span>
-                                    <span class="detail-value">{location}</span>
+                                    <span class="detail-icon">📅</span>
+                                    <span class="detail-label">Day:</span>
+                                    <span class="detail-value">{day_of_week}, {date}</span>
                                 </div>
                                 <div class="appointment-detail">
                                     <span class="detail-icon">⏰</span>
-                                    <span class="detail-label">Start:</span>
-                                    <span class="detail-value">{displayStart}</span>
+                                    <span class="detail-label">Time:</span>
+                                    <span class="detail-value">{start_time} to {end_time}</span>
                                 </div>
                                 <div class="appointment-detail">
-                                    <span class="detail-icon">🕒</span>
-                                    <span class="detail-label">End:</span>
-                                    <span class="detail-value">{displayEnd}</span>
+                                    <span class="detail-icon">👤</span>
+                                    <span class="detail-label">Participant:</span>
+                                    <span class="detail-value">{participant}</span>
                                 </div>
                                 <div class="appointment-detail">
                                     <span class="detail-icon">⏱️</span>
@@ -907,11 +797,17 @@ def main():
                                 </div>
                             </div>
                             """.format(
-                                location=row['Location'],
-                                displayStart=row['DisplayStart'],
-                                displayEnd=row['DisplayEnd'],
+                                day_of_week=start_datetime.strftime('%A'),
+                                date=start_datetime.strftime('%m/%d/%Y'),
+                                start_time=start_datetime.strftime('%I:%M %p'),
+                                end_time=end_datetime.strftime('%I:%M %p'),
+                                participant=row['Participant'],
                                 durationHours=row['DurationHours']
                             ), unsafe_allow_html=True)
+                            
+                            if st.session_state[f"assigned_{appt_id}"]:
+                                st.warning(f"⚠️ This appointment is already assigned to {st.session_state[f'selected_resource_{appt_id}']}. Please select another appointment.")
+                                continue
                             
                             # Create two columns for the dropdowns
                             col1, col2 = st.columns(2)
@@ -940,18 +836,13 @@ def main():
                             if selected_resource:
                                 st.session_state[f"selected_resource_{appt_id}"] = selected_resource
                             
-                            # Get the resource to display (either newly selected or just assigned)
+                            # Get the resource to display
                             display_resource = st.session_state[f"selected_resource_{appt_id}"]
                             
                             # Show resource details if one is selected or after assignment
                             if display_resource:
-                                # Get resource details (force refresh after assignment)
                                 resource_details = get_resource_details(display_resource)
                                 constraints = calculate_constraints(display_resource, st.session_state.selected_location)
-                                
-                                # After assignment, we need to force refresh the constraints
-                                if st.session_state[f"assigned_{appt_id}"]:
-                                    constraints = calculate_constraints(display_resource, st.session_state.selected_location)
                                 
                                 # Display resource details in a card
                                 st.markdown("""
@@ -989,43 +880,96 @@ def main():
                                     primaryLocation=resource_details.get('primaryLocation', 'Unknown')
                                 ), unsafe_allow_html=True)
                                 
-                                # Display constraints in metrics cards
-                                st.markdown("""
-                                <div class="metrics-container">
-                                    <div class="metric-card {consecutive_class}">
-                                        <div class="metric-value">{max_consecutive_days}/5</div>
-                                        <div class="metric-label">Consecutive Days {consecutive_icon}</div>
-                                    </div>
-                                    <div class="metric-card {hours_class}">
-                                        <div class="metric-value">{min_hours_between_shifts}h</div>
-                                        <div class="metric-label">Min Between Shifts {hours_icon}</div>
-                                    </div>
-                                    <div class="metric-card">
-                                        <div class="metric-value">{week1_hours:.1f}h</div>
-                                        <div class="metric-label">Week 1 Hours</div>
-                                    </div>
-                                    <div class="metric-card">
-                                        <div class="metric-value">{week2_hours:.1f}h</div>
-                                        <div class="metric-label">Week 2 Hours</div>
-                                    </div>
-                                    <div class="metric-card">
-                                        <div class="metric-value">{total_hours:.1f}h</div>
-                                        <div class="metric-label">Total Hours</div>
-                                    </div>
-                                </div>
-                                """.format(
-                                    max_consecutive_days=constraints['max_consecutive_days'],
-                                    consecutive_icon="✅" if constraints['max_consecutive_days'] <= 5 else "❌",
-                                    consecutive_class="metric-success" if constraints['max_consecutive_days'] <= 5 else "metric-danger",
-                                    min_hours_between_shifts=constraints['min_hours_between_shifts'],
-                                    hours_icon="✅" if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) >= 10 else "❌",
-                                    hours_class="metric-success" if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) >= 10 else "metric-danger",
-                                    week1_hours=constraints['week1_hours'],
-                                    week2_hours=constraints['week2_hours'],
-                                    total_hours=constraints['total_hours']
-                                ), unsafe_allow_html=True)
+                                # Calculate week numbers (1 or 2) based on rotation start
+                                rotation_start = constraints.get('rotation_start', datetime.now().date())
+                                week_num = 1 if (start_datetime.date() - rotation_start).days < 7 else 2
+                                
+                                # Calculate new hours if this appointment were assigned
+                                new_week1 = constraints['week1_hours']
+                                new_week2 = constraints['week2_hours']
+                                if week_num == 1:
+                                    new_week1 += row['DurationHours']
+                                else:
+                                    new_week2 += row['DurationHours']
+                                new_total = new_week1 + new_week2
+                                
+                                # Check contracted hours constraints
+                                contracted_hours = resource_details.get('hoursPerWeek', 38)
+                                employment_type = resource_details['employmentType']
+                                
+                                # Initialize error flags and messages
+                                week1_class = ""
+                                week2_class = ""
+                                total_class = ""
+                                hours_error = False
+                                error_messages = []
 
-                                # Validate constraints
+                                if resource_details['employmentType'] == 'Full Time':
+                                    if new_week1 > 38:
+                                        week1_class = "metric-danger"
+                                        hours_error = True
+                                        error_messages.append(f"❌ Week 1 hours would be {new_week1:.1f} (must not exceed 38)")
+                                    elif new_week1 < 38:
+                                        week1_class = "metric-warning"
+                                        error_messages.append(f"⚠️ Week 1 has {new_week1:.1f} hours (should reach 38)")
+                                    
+                                    if new_week2 > 38:
+                                        week2_class = "metric-danger"
+                                        hours_error = True
+                                        error_messages.append(f"❌ Week 2 hours would be {new_week2:.1f} (must not exceed 38)")
+                                    elif new_week2 < 38:
+                                        week2_class = "metric-warning"
+                                        error_messages.append(f"⚠️ Week 2 has {new_week2:.1f} hours (should reach 38)")
+                                    
+                                    if new_total > 76:
+                                        total_class = "metric-danger"
+                                        hours_error = True
+                                        error_messages.append(f"❌ Total hours would be {new_total:.1f} (must not exceed 76)")
+
+                                elif resource_details['employmentType'] == 'Part Time':
+                                    if contracted_hours <= 0 or contracted_hours >= 38:
+                                        hours_error = True
+                                        error_messages.append(f"❌ Invalid contracted hours ({contracted_hours}) for Part-Time (must be 1-37)")
+                                    if new_total > (contracted_hours * 2):
+                                        total_class = "metric-danger"
+                                        hours_error = True
+                                        error_messages.append(f"❌ Total hours would be {new_total:.1f} (must not exceed {contracted_hours*2})")
+                                
+                                # Display constraints in metrics cards
+                                st.markdown(f"""
+                                    <div class="metrics-container">
+                                        <div class="metric-card {week1_class}">
+                                            <div class="metric-value">{new_week1:.1f}h</div>
+                                            <div class="metric-label">Week 1 Hours {'❌' if week1_class == 'metric-danger' else '⚠️' if week1_class == 'metric-warning' else ''}</div>
+                                        </div>
+                                        <div class="metric-card {week2_class}">
+                                            <div class="metric-value">{new_week2:.1f}h</div>
+                                            <div class="metric-label">Week 2 Hours {'❌' if week2_class == 'metric-danger' else '⚠️' if week2_class == 'metric-warning' else ''}</div>
+                                        </div>
+                                        <div class="metric-card {total_class}">
+                                            <div class="metric-value">{new_total:.1f}h</div>
+                                            <div class="metric-label">Total Hours {'❌' if total_class == 'metric-danger' else ''}</div>
+                                        </div>
+                                        <div class="metric-card">
+                                            <div class="metric-value">{constraints['max_consecutive_days']}/5</div>
+                                            <div class="metric-label">Consecutive Days {'✅' if constraints['max_consecutive_days'] <= 5 else '❌'}</div>
+                                        </div>
+                                        <div class="metric-card">
+                                            <div class="metric-value">{constraints['min_hours_between_shifts']}h</div>
+                                            <div class="metric-label">Min Between Shifts {'✅' if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) >= 10 else '❌'}</div>
+                                        </div>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+
+                                # For the warning message
+                                if hours_error:
+                                    st.markdown(f"""
+                                    <div class="hours-warning">
+                                        <p class="hours-warning-text">⚠️ WARNING: {error_messages[0]}</p>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                
+                                # Validate other constraints
                                 constraint_errors = []
                                 if constraints['max_consecutive_days'] > 5:
                                     constraint_errors.append(f"❌ This resource has {constraints['max_consecutive_days']} consecutive days (max 5 allowed)")
@@ -1045,59 +989,62 @@ def main():
                                         st.markdown(f'<div class="constraint-error">{error}</div>', unsafe_allow_html=True)
                                     st.markdown("</div></div>", unsafe_allow_html=True)
                             
-                            # Assign button
-                            if st.button("✨ Assign Resource", key=f"assign_btn_{appt_id}"):
-                                if not selected_resource:
-                                    st.error("Please select a resource to assign")
-                                else:
-                                    # Check constraints before assignment
-                                    constraints = calculate_constraints(selected_resource, st.session_state.selected_location)
-                                    
-                                    # Get existing appointments for this resource to check against new appointment
-                                    existing_appointments = get_appointments_by_resource_and_location(
-                                        selected_resource, 
-                                        st.session_state.selected_location
-                                    )
-                                    
-                                    # Check consecutive days constraint (max 5)
-                                    if constraints['max_consecutive_days'] >= 5:
-                                        st.error(f"❌ Cannot assign - {selected_resource} already has {constraints['max_consecutive_days']} consecutive days (max 5 allowed)")
-                                    
-                                    # Check minimum hours between shifts (min 10 hours)
-                                    elif constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
-                                        st.error(f"❌ Cannot assign - Only {constraints['min_hours_between_shifts']} hours between shifts (min 10 required)")
-                                    
-                                    # Additional check for the new appointment's timing
+                            # Assign button (only show if not already assigned)
+                            if not st.session_state[f"assigned_{appt_id}"]:
+                                if st.button("✨ Assign Resource", key=f"assign_btn_{appt_id}"):
+                                    if not selected_resource:
+                                        st.error("Please select a resource to assign")
                                     else:
-                                        # Check if this new appointment would violate the 10-hour gap rule
-                                        violation_found = False
-                                        for _, existing_row in existing_appointments.iterrows():
-                                            existing_start = pd.to_datetime(existing_row['StartDateTime'])
-                                            existing_end = pd.to_datetime(existing_row['EndDateTime'])
-                                            
-                                            # Check gap before new appointment
-                                            gap_before = (start_datetime - existing_end).total_seconds() / 3600
-                                            if 0 < gap_before < 10:
-                                                st.error(f"❌ Cannot assign - Only {gap_before:.1f} hours between new shift and existing shift ending at {existing_row['DisplayEnd']}")
-                                                violation_found = True
-                                                break
-                                            
-                                            # Check gap after new appointment
-                                            gap_after = (existing_start - end_datetime).total_seconds() / 3600
-                                            if 0 < gap_after < 10:
-                                                st.error(f"❌ Cannot assign - Only {gap_after:.1f} hours between new shift and existing shift starting at {existing_row['DisplayStart']}")
-                                                violation_found = True
-                                                break
+                                        # Check constraints before assignment
+                                        constraints = calculate_constraints(selected_resource, st.session_state.selected_location)
                                         
-                                        if not violation_found:
-                                            if assign_resource_to_appointment(appt_id, selected_resource):
-                                                st.session_state[f"assigned_{appt_id}"] = True
-                                                st.session_state[f"selected_resource_{appt_id}"] = selected_resource
-                                                st.success(f"✅ Successfully assigned {selected_resource} to this appointment!")
-                                                # Force update by rerunning but keeping expander open
-                                                st.rerun()
-                                            else:
-                                                st.error("Failed to assign resource")
+                                        # Get existing appointments for this resource
+                                        existing_appointments = get_appointments_by_resource_and_location(
+                                            selected_resource, 
+                                            st.session_state.selected_location
+                                        )
+                                        
+                                        # Check consecutive days constraint (max 5)
+                                        if constraints['max_consecutive_days'] >= 5:
+                                            st.error(f"❌ Cannot assign - {selected_resource} already has {constraints['max_consecutive_days']} consecutive days (max 5 allowed)")
+                                        
+                                        # Check minimum hours between shifts (min 10 hours)
+                                        elif constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
+                                            st.error(f"❌ Cannot assign - Only {constraints['min_hours_between_shifts']} hours between shifts (min 10 required)")
+                                        
+                                        # Additional check for the new appointment's timing
+                                        else:
+                                            # Check if this new appointment would violate the 10-hour gap rule
+                                            violation_found = False
+                                            for _, existing_row in existing_appointments.iterrows():
+                                                existing_start = pd.to_datetime(existing_row['StartDateTime'])
+                                                existing_end = pd.to_datetime(existing_row['EndDateTime'])
+                                                
+                                                # Check gap before new appointment
+                                                gap_before = (start_datetime - existing_end).total_seconds() / 3600
+                                                if 0 < gap_before < 10:
+                                                    st.error(f"❌ Cannot assign - Only {gap_before:.1f} hours between new shift and existing shift ending at {existing_row['DisplayEnd']}")
+                                                    violation_found = True
+                                                    break
+                                                
+                                                # Check gap after new appointment
+                                                gap_after = (existing_start - end_datetime).total_seconds() / 3600
+                                                if 0 < gap_after < 10:
+                                                    st.error(f"❌ Cannot assign - Only {gap_after:.1f} hours between new shift and existing shift starting at {existing_row['DisplayStart']}")
+                                                    violation_found = True
+                                                    break
+                                            
+                                            if not violation_found and not hours_error:
+                                                if assign_resource_to_appointment(appt_id, selected_resource):
+                                                    st.session_state[f"assigned_{appt_id}"] = True
+                                                    st.session_state[f"selected_resource_{appt_id}"] = selected_resource
+                                                    st.success(f"✅ Successfully assigned {selected_resource} to this appointment!")
+                                                    # Force update by rerunning but keeping expander open
+                                                    st.rerun()
+                                                else:
+                                                    st.error("Failed to assign resource")
+                                            elif hours_error:
+                                                st.error("Cannot assign due to contracted hours violation")
                 else:
                     st.markdown("""
                     <div class="empty-state success">
