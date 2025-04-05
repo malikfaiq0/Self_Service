@@ -831,3 +831,131 @@ body {
 .resource-card { animation-delay: 0.1s; }
 .metrics-container { animation-delay: 0.2s; }
 .section-header { animation-delay: 0.3s; }
+
+
+/* Add these new styles to your existing CSS */
+
+/* Enhanced warning styles for exceeded hours */
+.metric-danger {
+    border-top: 4px solid #FF0000 !important;
+    background: rgba(255, 0, 0, 0.1) !important;
+    animation: pulseWarning 1.5s infinite;
+}
+
+.metric-danger::before {
+    background: #FF0000 !important;
+}
+
+.metric-danger .metric-value {
+    color: #FF0000 !important;
+    font-size: 2.2rem !important;
+    font-weight: 800 !important;
+}
+
+.metric-danger .metric-label {
+    color: #FF0000 !important;
+    font-weight: 600 !important;
+}
+
+/* Yellow style for total hours */
+.metric-total {
+    border-top: 4px solid var(--accent-yellow) !important;
+    background: rgba(236, 211, 109, 0.1) !important;
+}
+
+.metric-total::before {
+    background: var(--accent-yellow) !important;
+}
+
+.metric-total .metric-value {
+    color: var(--accent-yellow) !important;
+}
+
+.metric-total .metric-label {
+    color: var(--accent-yellow) !important;
+}
+
+/* Big red warning message */
+.hours-warning {
+    background: rgba(255, 0, 0, 0.15) !important;
+    border-left: 4px solid #FF0000 !important;
+    padding: 1.5rem !important;
+    border-radius: 8px !important;
+    margin: 1rem 0 !important;
+    animation: pulseWarning 2s infinite;
+}
+
+.hours-warning-text {
+    color: #FF0000 !important;
+    font-size: 1.2rem !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    margin: 0 !important;
+}
+
+/* Pulsing animation for warnings */
+@keyframes pulseWarning {
+    0% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.4); }
+    70% { box-shadow: 0 0 0 10px rgba(255, 0, 0, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0); }
+}
+
+/* X icon styling */
+.exceeded-icon {
+    color: #FF0000;
+    font-weight: bold;
+    margin-left: 5px;
+}
+
+/* Update the metrics container to include these new classes */
+.metrics-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1.5rem;
+    margin: 2rem 0;
+}
+
+.metric-card {
+    /* Keep existing styles but add position relative */
+    position: relative;
+    overflow: visible;
+}
+
+/* Add this to your existing .metric-card styles */
+.metric-card::after {
+    content: '';
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    width: 20px;
+    height: 20px;
+    background-color: #FF0000;
+    border-radius: 50%;
+    display: none;
+    z-index: 3;
+}
+
+.metric-danger::after {
+    display: block;
+    content: 'X';
+    color: white;
+    font-weight: bold;
+    font-size: 12px;
+    text-align: center;
+    line-height: 20px;
+}
+
+
+/* Add this to your CSS */
+.metric-warning {
+    border-top: 4px solid var(--accent-yellow) !important;
+    background: rgba(236, 211, 109, 0.1) !important;
+}
+
+.metric-warning .metric-value {
+    color: var(--accent-yellow) !important;
+}
+
+.metric-warning .metric-label {
+    color: var(--accent-yellow) !important;
+}
