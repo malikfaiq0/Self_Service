@@ -8,14 +8,14 @@ from contextlib import contextmanager
 # Set page config must be first command
 st.set_page_config(
     layout="wide",
-    page_title="Roster Management Pro",
-    page_icon="📊",
+    page_title="Shift Management",
+    page_icon="📅",
     initial_sidebar_state="expanded"
 )
 
-# Load custom CSS
+# Custom CSS
 def load_css():
-    with open("style.css", "r", encoding="utf-8", errors="ignore") as f:
+    with open("styles.css", "r", encoding="utf-8", errors="ignore") as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 load_css()
@@ -65,11 +65,11 @@ def db_connection():
         conn.close()
 
 # Test connection
-try:
-    with db_connection() as conn:
-        st.sidebar.success("✅ Connected to the database successfully!")
-except Exception as e:
-    st.sidebar.error(f"❌ Database connection failed: {str(e)}")
+# try:
+#     with db_connection() as conn:
+#         st.sidebar.success("✅ Connected to the database successfully!")
+# except Exception as e:
+#     st.sidebar.error(f"❌ Database connection failed: {str(e)}")
 
 # Helper function to normalize location names
 def normalize_location(location):
@@ -89,7 +89,7 @@ def get_location_participant_mapping():
         SELECT DISTINCT 
             maica__Participant_Location__c as location,
             maica__Participants__c as participant
-        FROM Appointments
+        FROM NewAppointments
         WHERE maica__Participants__c LIKE '%Roster%'
         AND maica__Participant_Location__c IS NOT NULL
         """
@@ -103,7 +103,7 @@ def get_locations_with_participants():
         SELECT DISTINCT 
             maica__Participant_Location__c as location,
             maica__Participants__c as participant_name
-        FROM Appointments
+        FROM NewAppointments
         WHERE maica__Participants__c LIKE '%Roster%'
         AND maica__Participant_Location__c IS NOT NULL
         ORDER BY maica__Participants__c
@@ -117,27 +117,6 @@ def get_locations_with_participants():
             'display_name': row['participant_name'],
             'location': row['location']
         })
-    
-    return locations
-
-@st.cache_data(ttl=3600)
-def get_locations():
-    mapping = get_location_participant_mapping()
-    
-    with db_connection() as conn:
-        query = """
-        SELECT DISTINCT maica__Participant_Location__c 
-        FROM Appointments 
-        WHERE maica__Participant_Location__c IS NOT NULL
-        AND maica__Participants__c LIKE '%Roster%'
-        """
-        df = pd.read_sql(query, conn)
-    
-    # Create list of tuples: (display_name, actual_location)
-    locations = []
-    for loc in df['maica__Participant_Location__c'].tolist():
-        display_name = mapping.get(loc, loc)  # Default to location if no participant found
-        locations.append((display_name, loc))
     
     return locations
 
@@ -194,9 +173,53 @@ def get_resources_by_location(location, employment_type='All'):
         return [' '.join(name.split()) for name in df['resource_name'].tolist()]
     return []
 
-@st.cache_data(ttl=300)  # Short cache since appointments change frequently
+@st.cache_data(ttl=300)
+def get_week_ranges(location):
+    """Get the start and end dates for week 1 and week 2 based on actual appointments for this location"""
+    norm_location = normalize_location(location)
+    
+    with db_connection() as conn:
+        query = """
+        SELECT 
+            MIN(maica__Scheduled_Start__c) as first_start,
+            MAX(maica__Scheduled_Start__c) as last_start
+        FROM NewAppointments
+        WHERE maica__Participant_Location__c LIKE '%' + ? + '%'
+        AND maica__Participants__c LIKE '%Roster%'
+        """
+        df = pd.read_sql(query, conn, params=[norm_location])
+    
+    if df.empty or df.iloc[0]['first_start'] is None:
+        # Default to current week if no appointments found
+        today = datetime.now().date()
+        week1_start = today - timedelta(days=today.weekday())
+        week1_end = week1_start + timedelta(days=6)
+        week2_start = week1_end + timedelta(days=1)
+        week2_end = week2_start + timedelta(days=6)
+    else:
+        first_start = pd.to_datetime(df.iloc[0]['first_start']).date()
+        last_start = pd.to_datetime(df.iloc[0]['last_start']).date()
+        
+        # Calculate week ranges based on actual appointment dates
+        week1_start = first_start
+        week1_end = week1_start + timedelta(days=6)
+        week2_start = week1_end + timedelta(days=1)
+        week2_end = last_start  # Use last appointment date as end of week 2
+    
+    return {
+        'week1_start': week1_start,
+        'week1_end': week1_end,
+        'week2_start': week2_start,
+        'week2_end': week2_end
+    }
+
+
+@st.cache_data(ttl=300)
 def get_appointments_by_resource_and_location(resource, location):
     norm_location = normalize_location(location)
+    
+    # First get the week ranges for this location
+    week_ranges = get_week_ranges(location)
     
     with db_connection() as conn:
         query = """
@@ -207,21 +230,34 @@ def get_appointments_by_resource_and_location(resource, location):
             CONVERT(VARCHAR, maica__Scheduled_End__c, 120) AS EndDateTime,
             maica__Scheduled_Duration_Minutes__c AS DurationMinutes,
             maica__Participants__c AS Participant
-        FROM Appointments
-        WHERE maica__Resources__c = ?
+        FROM NewAppointments
+        WHERE REPLACE(REPLACE(maica__Resources__c, '  ', ' '), '  ', ' ') = ?
         AND maica__Participant_Location__c LIKE '%' + ? + '%'
         AND maica__Participants__c LIKE '%Roster%'
         ORDER BY maica__Scheduled_Start__c
         """
-        params = [resource, norm_location]
+        normalized_resource = ' '.join(resource.split())
+        params = [normalized_resource, norm_location]
         
         df = pd.read_sql(query, conn, params=params)
     
     if not df.empty:
         df['DurationHours'] = df['DurationMinutes'] / 60
         df['StartDate'] = pd.to_datetime(df['StartDateTime']).dt.date
-        df['DisplayStart'] = pd.to_datetime(df['StartDateTime']).dt.strftime('%m/%d/%Y %I:%M %p')
-        df['DisplayEnd'] = pd.to_datetime(df['EndDateTime']).dt.strftime('%m/%d/%Y %I:%M %p')
+        df['DisplayStart'] = pd.to_datetime(df['StartDateTime']).dt.strftime('%a, %m/%d/%Y %I:%M %p')
+        df['DisplayEnd'] = pd.to_datetime(df['EndDateTime']).dt.strftime('%a, %m/%d/%Y %I:%M %p')
+        df['DayOfWeek'] = pd.to_datetime(df['StartDateTime']).dt.day_name()
+        
+        # Calculate week number based on the location's week ranges
+        def calculate_week(start_date):
+            if week_ranges['week1_start'] <= start_date <= week_ranges['week1_end']:
+                return 1
+            elif week_ranges['week2_start'] <= start_date <= week_ranges['week2_end']:
+                return 2
+            else:
+                return 1  # Default to week 1 if outside these ranges
+        
+        df['Week'] = df['StartDate'].apply(calculate_week)
     return df
 
 @st.cache_data(ttl=600)
@@ -285,6 +321,9 @@ def get_resource_details(resource_name):
 def get_unassigned_appointments(location):
     norm_location = normalize_location(location)
     
+    # First get the week ranges for this location
+    week_ranges = get_week_ranges(location)
+    
     with db_connection() as conn:
         query = """
         SELECT 
@@ -294,7 +333,7 @@ def get_unassigned_appointments(location):
             CONVERT(VARCHAR, maica__Scheduled_End__c, 120) AS EndDateTime,
             maica__Scheduled_Duration_Minutes__c AS DurationMinutes,
             maica__Participants__c AS Participant
-        FROM Appointments
+        FROM NewAppointments
         WHERE (maica__Resources__c IS NULL OR maica__Resources__c = 'NULL')
         AND maica__Participant_Location__c LIKE '%' + ? + '%'
         AND maica__Participants__c LIKE '%Roster%'
@@ -307,18 +346,100 @@ def get_unassigned_appointments(location):
     if not df.empty:
         df['DurationHours'] = df['DurationMinutes'] / 60
         df['StartDate'] = pd.to_datetime(df['StartDateTime']).dt.date
-        df['DisplayStart'] = pd.to_datetime(df['StartDateTime']).dt.strftime('%m/%d/%Y %I:%M %p')
-        df['DisplayEnd'] = pd.to_datetime(df['EndDateTime']).dt.strftime('%m/%d/%Y %I:%M %p')
+        df['DisplayStart'] = pd.to_datetime(df['StartDateTime']).dt.strftime('%a, %m/%d/%Y %I:%M %p')
+        df['DisplayEnd'] = pd.to_datetime(df['EndDateTime']).dt.strftime('%a, %m/%d/%Y %I:%M %p')
+        df['DayOfWeek'] = pd.to_datetime(df['StartDateTime']).dt.day_name()
+        
+        # Calculate week number based on the location's week ranges
+        def calculate_week(start_date):
+            if week_ranges['week1_start'] <= start_date <= week_ranges['week1_end']:
+                return 1
+            elif week_ranges['week2_start'] <= start_date <= week_ranges['week2_end']:
+                return 2
+            else:
+                return 1  # Default to week 1 if outside these ranges
+        
+        df['Week'] = df['StartDate'].apply(calculate_week)
     return df
 
 def assign_resource_to_appointment(appointment_id, resource_name):
     normalized_name = ' '.join(resource_name.split())
     
+    # First check if appointment is already assigned
+    with db_connection() as conn:
+        check_query = "SELECT maica__Resources__c FROM NewAppointments WHERE Id = ?"
+        current_assignment = pd.read_sql(check_query, conn, params=[appointment_id]).iloc[0,0]
+        
+        if current_assignment and current_assignment != 'NULL':
+            st.error(f"This appointment is already assigned to {current_assignment}")
+            return False
+    
+    # Get appointment details
+    with db_connection() as conn:
+        appt_query = """
+        SELECT 
+            maica__Scheduled_Start__c,
+            maica__Scheduled_End__c,
+            maica__Scheduled_Duration_Minutes__c
+        FROM NewAppointments
+        WHERE Id = ?
+        """
+        appt_details = pd.read_sql(appt_query, conn, params=[appointment_id]).iloc[0]
+    
+    # Get current constraints for the resource
+    resource_details = get_resource_details(resource_name)
+    constraints = calculate_constraints(resource_name, resource_details['primaryLocation'])
+    
+    # Check minimum hours between shifts
+    if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
+        st.error(f"Cannot assign - Minimum 10 hours required between shifts (currently {constraints['min_hours_between_shifts']}h)")
+        return False
+    
+    # Check consecutive days
+    if constraints['max_consecutive_days'] > 5:
+        st.error(f"Cannot assign - Exceeds maximum 5 consecutive days (currently {constraints['max_consecutive_days']} days)")
+        return False
+    
+    # Check weekly hours (using week-specific validation)
+    appt_hours = appt_details['maica__Scheduled_Duration_Minutes__c'] / 60
+    start_date = pd.to_datetime(appt_details['maica__Scheduled_Start__c']).date()
+    
+    # Get week ranges for the location
+    week_ranges = get_week_ranges(resource_details['primaryLocation'])
+    
+    # Determine which week this appointment belongs to
+    if week_ranges['week1_start'] <= start_date <= week_ranges['week1_end']:
+        week_num = 1
+    else:
+        week_num = 2
+    
+    if resource_details['employmentType'] == 'Full Time':
+        if week_num == 1 and (constraints['week1_hours'] + appt_hours) > 38:
+            st.error(f"Cannot assign - Week 1 hours would exceed 38 (would be {constraints['week1_hours'] + appt_hours:.1f}h)")
+            return False
+        if week_num == 2 and (constraints['week2_hours'] + appt_hours) > 38:
+            st.error(f"Cannot assign - Week 2 hours would exceed 38 (would be {constraints['week2_hours'] + appt_hours:.1f}h)")
+            return False
+        if (constraints['total_hours'] + appt_hours) > 76:
+            st.error(f"Cannot assign - Total hours would exceed 76 (would be {constraints['total_hours'] + appt_hours:.1f}h)")
+            return False
+    elif resource_details['employmentType'] == 'Part Time':
+        if week_num == 1 and (constraints['week1_hours'] + appt_hours) > resource_details['hoursPerWeek']:
+            st.error(f"Cannot assign - Week 1 hours would exceed contracted {resource_details['hoursPerWeek']}h (would be {constraints['week1_hours'] + appt_hours:.1f}h)")
+            return False
+        if week_num == 2 and (constraints['week2_hours'] + appt_hours) > resource_details['hoursPerWeek']:
+            st.error(f"Cannot assign - Week 2 hours would exceed contracted {resource_details['hoursPerWeek']}h (would be {constraints['week2_hours'] + appt_hours:.1f}h)")
+            return False
+        if (constraints['total_hours'] + appt_hours) > (resource_details['hoursPerWeek'] * 2):
+            st.error(f"Cannot assign - Total hours would exceed contracted {resource_details['hoursPerWeek']*2}h (would be {constraints['total_hours'] + appt_hours:.1f}h)")
+            return False
+    
+    # If all checks pass, proceed with assignment
     with db_connection() as conn:
         cursor = conn.cursor()
         try:
             update_query = """
-            UPDATE Appointments
+            UPDATE NewAppointments
             SET maica__Resources__c = ?
             WHERE Id = ?
             """
@@ -334,108 +455,1045 @@ def assign_resource_to_appointment(appointment_id, resource_name):
             return False
 
 @st.cache_data(ttl=300)
+@st.cache_data(ttl=300)
 def calculate_constraints(resource_name, location):
     norm_location = normalize_location(location)
+    normalized_name = ' '.join(resource_name.split())
     
     with db_connection() as conn:
+        # Get resource details
+        resource_query = """
+        SELECT employmentType, hoursPerWeek 
+        FROM Resources 
+        WHERE REPLACE(REPLACE(fullName, '  ', ' '), '  ', ' ') = ?
+        """
+        resource_df = pd.read_sql(resource_query, conn, params=[normalized_name])
+        
+        if resource_df.empty:
+            return {
+                'max_consecutive_days': 0,
+                'min_hours_between_shifts': 'N/A',
+                'same_day_min_gap': 'N/A',
+                'week1_hours': 0,
+                'week2_hours': 0,
+                'total_hours': 0,
+                'shift_details': [],
+                'employmentType': 'Unknown',
+                'contractedHours': 0,
+                'gap_violation': False,
+                'same_day_gap_violation': False,
+                'week1_violation': False,
+                'week2_violation': False,
+                'total_violation': False
+            }
+            
+        resource_details = resource_df.iloc[0]
+        
+        # Get appointments sorted by start time
         query = """
         SELECT 
             a.Id AS AppointmentID,
             a.maica__Scheduled_Start__c AS StartDateTime,
             a.maica__Scheduled_End__c AS EndDateTime,
             a.maica__Scheduled_Duration_Minutes__c AS DurationMinutes
-        FROM Appointments a
-        WHERE a.maica__Resources__c = ?
+        FROM NewAppointments a
+        WHERE REPLACE(REPLACE(a.maica__Resources__c, '  ', ' '), '  ', ' ') = ?
         AND a.maica__Participant_Location__c LIKE '%' + ? + '%'
         ORDER BY a.maica__Scheduled_Start__c
         """
-        params = [resource_name, norm_location]
-        
+        params = [normalized_name, norm_location]
         df = pd.read_sql(query, conn, params=params)
     
     if df.empty:
         return {
             'max_consecutive_days': 0,
             'min_hours_between_shifts': 'N/A',
+            'same_day_min_gap': 'N/A',
             'week1_hours': 0,
             'week2_hours': 0,
             'total_hours': 0,
-            'shift_details': []
+            'shift_details': [],
+            'employmentType': resource_details['employmentType'],
+            'contractedHours': resource_details['hoursPerWeek'],
+            'gap_violation': False,
+            'same_day_gap_violation': False,
+            'week1_violation': False,
+            'week2_violation': False,
+            'total_violation': False
         }
     
     df['StartDateTime'] = pd.to_datetime(df['StartDateTime'])
     df['EndDateTime'] = pd.to_datetime(df['EndDateTime'])
-    
-    shift_details = []
-    for _, row in df.iterrows():
-        shift_details.append({
-            'date': row['StartDateTime'].date(),
-            'start': row['StartDateTime'].time(),
-            'end': row['EndDateTime'].time(),
-            'duration': row['DurationMinutes']/60
-        })
-    
-    # Calculate consecutive days
+    df = df.sort_values('StartDateTime')
     df['Date'] = df['StartDateTime'].dt.date
-    unique_dates = df.drop_duplicates('Date')
+    df['Week'] = df['StartDateTime'].apply(lambda x: 1 if (x.date() - df['StartDateTime'].min().date()).days < 7 else 2)
     
-    if len(unique_dates) > 1:
-        unique_dates = unique_dates.sort_values('Date')
-        unique_dates['DayDiff'] = unique_dates['Date'].diff().dt.days.fillna(1)
-        unique_dates['ConsecutiveGroup'] = (unique_dates['DayDiff'] != 1).cumsum()
-        consecutive_counts = unique_dates.groupby('ConsecutiveGroup').size()
-        max_consecutive_days = consecutive_counts.max()
-    else:
-        max_consecutive_days = 1
+    # Calculate consecutive days PER WEEK
+    max_consecutive_days = 0
+    for week_num in [1, 2]:
+        week_df = df[df['Week'] == week_num]
+        if not week_df.empty:
+            unique_dates = week_df.drop_duplicates('Date').sort_values('Date')
+            if len(unique_dates) > 1:
+                unique_dates['DayDiff'] = unique_dates['Date'].diff().dt.days.fillna(1)
+                unique_dates['ConsecutiveGroup'] = (unique_dates['DayDiff'] != 1).cumsum()
+                consecutive_counts = unique_dates.groupby('ConsecutiveGroup').size()
+                week_max = consecutive_counts.max()
+                if week_max > max_consecutive_days:
+                    max_consecutive_days = week_max
     
-    # Calculate hours between shifts
-    df_sorted = df.sort_values('StartDateTime')
-    if len(df_sorted) > 1:
-        df_sorted['NextStart'] = df_sorted['StartDateTime'].shift(-1)
-        df_sorted['HoursBetween'] = (df_sorted['NextStart'] - df_sorted['EndDateTime']).dt.total_seconds() / 3600
-        min_hours_between = df_sorted['HoursBetween'].min()
-    else:
-        min_hours_between = None
+    # Calculate minimum hours between ALL consecutive shifts
+    min_hours_between = None
+    gap_violation = False
+    
+    # Calculate same-day minimum gap
+    same_day_min_gap = None
+    same_day_gap_violation = False
+    
+    # Check gaps between all consecutive shifts
+    for i in range(len(df)-1):
+        current_end = df.iloc[i]['EndDateTime']
+        next_start = df.iloc[i+1]['StartDateTime']
+        gap = (next_start - current_end).total_seconds() / 3600
+        
+        # Update overall minimum gap
+        if min_hours_between is None or gap < min_hours_between:
+            min_hours_between = gap
+            if gap < 10:
+                gap_violation = True
+        
+        # Update same-day gap if applicable
+        if current_end.date() == next_start.date():
+            if same_day_min_gap is None or gap < same_day_min_gap:
+                same_day_min_gap = gap
+                if gap < 10:
+                    same_day_gap_violation = True
     
     # Calculate weekly hours
-    rotation_start = df['StartDateTime'].min().date()
-    df['Week'] = df['StartDateTime'].apply(
-        lambda x: 1 if (x.date() - rotation_start).days < 7 else 2
-    )
-    
     weekly_hours = df.groupby('Week')['DurationMinutes'].sum() / 60
     week1_hours = weekly_hours.get(1, 0)
     week2_hours = weekly_hours.get(2, 0)
     total_hours = weekly_hours.sum()
     
+    # Check for violations
+    week1_violation = False
+    week2_violation = False
+    total_violation = False
+    
+    if resource_details['employmentType'] == 'Full Time':
+        if week1_hours > 38:
+            week1_violation = True
+        if week2_hours > 38:
+            week2_violation = True
+        if total_hours > 76:
+            total_violation = True
+    elif resource_details['employmentType'] == 'Part Time':
+        contracted_hours = resource_details['hoursPerWeek']
+        if week1_hours > contracted_hours:
+            week1_violation = True
+        if week2_hours > contracted_hours:
+            week2_violation = True
+        if total_hours > (contracted_hours * 2):
+            total_violation = True
+    
     return {
         'max_consecutive_days': max_consecutive_days,
         'min_hours_between_shifts': f"{min_hours_between:.1f}" if min_hours_between is not None else 'N/A',
+        'same_day_min_gap': f"{same_day_min_gap:.1f}" if same_day_min_gap is not None else 'N/A',
         'week1_hours': week1_hours,
         'week2_hours': week2_hours,
         'total_hours': total_hours,
-        'shift_details': shift_details
+        'shift_details': df.to_dict('records'),
+        'employmentType': resource_details['employmentType'],
+        'contractedHours': resource_details['hoursPerWeek'],
+        'gap_violation': gap_violation,
+        'same_day_gap_violation': same_day_gap_violation,
+        'week1_violation': week1_violation,
+        'week2_violation': week2_violation,
+        'total_violation': total_violation
     }
 
-def main():
-    # Sidebar with filters
-    with st.sidebar:
+def validate_assignment(resource_name, location, new_appt_start, new_appt_end, week_num=None):
+    """Validate if new assignment would violate constraints"""
+    constraints = calculate_constraints(resource_name, location)
+    new_start = pd.to_datetime(new_appt_start)
+    new_end = pd.to_datetime(new_appt_end)
+    
+    # Check for gap violations with existing shifts in same week
+    min_gap = None
+    for appt in constraints['shift_details']:
+        if appt['Week'] == week_num:
+            existing_start = pd.to_datetime(appt['StartDateTime'])
+            existing_end = pd.to_datetime(appt['EndDateTime'])
+            
+            gap_before = (existing_start - new_end).total_seconds() / 3600
+            gap_after = (new_start - existing_end).total_seconds() / 3600
+            
+            if gap_before > 0 and gap_after > 0:
+                gap = min(gap_before, gap_after)
+            else:
+                gap = max(gap_before, gap_after)
+            
+            if min_gap is None or gap < min_gap:
+                min_gap = gap
+    
+    if min_gap is not None and min_gap < 10:
+        return False, f"Would have only {min_gap:.1f}h gap with existing shift (min 10h required)"
+    
+    # Check consecutive days only for current week
+    current_week_dates = [pd.to_datetime(appt['StartDateTime']).date() 
+                         for appt in constraints['shift_details'] 
+                         if appt['Week'] == week_num]
+    current_week_dates = list(set(current_week_dates))  # Get unique dates
+    new_date = new_start.date()
+    
+    if current_week_dates:
+        all_dates = sorted(current_week_dates + [new_date])
+        consecutive_count = 1
+        max_consecutive = 1
+        for i in range(1, len(all_dates)):
+            if (all_dates[i] - all_dates[i-1]).days == 1:
+                consecutive_count += 1
+                max_consecutive = max(max_consecutive, consecutive_count)
+            else:
+                consecutive_count = 1
+        
+        if max_consecutive > 5:
+            return False, f"Would have {max_consecutive} consecutive days in this week (max 5 allowed)"
+    
+    # Only check the weekly hours for the relevant week
+    resource_details = get_resource_details(resource_name)
+    appt_hours = (new_end - new_start).total_seconds() / 3600
+    
+    if week_num == 1:
+        if resource_details['employmentType'] == 'Full Time' and (constraints['week1_hours'] + appt_hours) > 38:
+            return False, f"Would exceed Week 1 limit (38h)"
+        elif resource_details['employmentType'] == 'Part Time' and (constraints['week1_hours'] + appt_hours) > resource_details['hoursPerWeek']:
+            return False, f"Would exceed Week 1 contracted hours ({resource_details['hoursPerWeek']}h)"
+    
+    elif week_num == 2:
+        if resource_details['employmentType'] == 'Full Time' and (constraints['week2_hours'] + appt_hours) > 38:
+            return False, f"Would exceed Week 2 limit (38h)"
+        elif resource_details['employmentType'] == 'Part Time' and (constraints['week2_hours'] + appt_hours) > resource_details['hoursPerWeek']:
+            return False, f"Would exceed Week 2 contracted hours ({resource_details['hoursPerWeek']}h)"
+    
+    # Check total hours constraint for both weeks
+    if (constraints['total_hours'] + appt_hours) > (38 * 2 if resource_details['employmentType'] == 'Full Time' else resource_details['hoursPerWeek'] * 2):
+        return False, f"Would exceed total hours limit"
+    
+    return True, "Valid assignment"
+
+
+def calculate_constraints_with_potential_assignment(resource_name, location, new_appt_start, new_appt_end):
+    """Calculate constraints including a potential new assignment"""
+    constraints = calculate_constraints(resource_name, location)
+    
+    if constraints['shift_details']:
+        # Check if new appointment overlaps or has insufficient gap with existing ones
+        new_start = pd.to_datetime(new_appt_start)
+        new_end = pd.to_datetime(new_appt_end)
+        
+        # Find closest appointments before and after
+        min_gap = None
+        for appt in constraints['shift_details']:
+            existing_start = pd.to_datetime(appt['StartDateTime'])
+            existing_end = pd.to_datetime(appt['EndDateTime'])
+            
+            # Only check gaps for same-day appointments
+            if existing_start.date() == new_start.date():
+                if new_start < existing_end:  # Overlapping
+                    gap = (existing_start - new_end).total_seconds() / 3600
+                else:
+                    gap = (new_start - existing_end).total_seconds() / 3600
+                
+                if min_gap is None or gap < min_gap:
+                    min_gap = gap
+        
+        if min_gap is not None and min_gap < 10:
+            constraints['min_hours_between_shifts'] = f"{min_gap:.1f}"
+            constraints['gap_violation'] = True
+        else:
+            constraints['gap_violation'] = False
+    
+    return constraints
+
+def display_constraints(constraints):
+    consecutive_class = "metric-card"
+    if constraints['max_consecutive_days'] >= 5:
+        consecutive_class = "metric-card alert-danger"
+    
+    hours_class = "metric-card"
+    if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
+        hours_class = "metric-card alert-danger"
+    
+    week1_class = "metric-card"
+    if constraints['week1_violation']:
+        week1_class = "metric-card alert-danger"
+    
+    week2_class = "metric-card"
+    if constraints['week2_violation']:
+        week2_class = "metric-card alert-danger"
+    
+    total_class = "metric-card"
+    if constraints['total_violation']:
+        total_class = "metric-card alert-danger"
+    
+    st.markdown("""
+    <div class="metric-container">
+        <div class="{consecutive_class}">
+            <div class="metric-value">{max_consecutive_days}/5</div>
+            <div class="metric-label">Consecutive Days</div>
+        </div>
+        <div class="{hours_class}">
+            <div class="metric-value">{min_hours_between_shifts}h</div>
+            <div class="metric-label">Min Between Shifts</div>
+        </div>
+        <div class="{week1_class}">
+            <div class="metric-value">{week1_hours:.1f}h</div>
+            <div class="metric-label">Week 1 Hours</div>
+        </div>
+        <div class="{week2_class}">
+            <div class="metric-value">{week2_hours:.1f}h</div>
+            <div class="metric-label">Week 2 Hours</div>
+        </div>
+        <div class="{total_class}">
+            <div class="metric-value">{total_hours:.1f}h</div>
+            <div class="metric-label">Total Hours</div>
+        </div>
+    </div>
+    """.format(
+        max_consecutive_days=constraints['max_consecutive_days'],
+        min_hours_between_shifts=constraints['min_hours_between_shifts'],
+        week1_hours=constraints['week1_hours'],
+        week2_hours=constraints['week2_hours'],
+        total_hours=constraints['total_hours'],
+        consecutive_class=consecutive_class,
+        hours_class=hours_class,
+        week1_class=week1_class,
+        week2_class=week2_class,
+        total_class=total_class
+    ), unsafe_allow_html=True)
+
+    # Validate constraints
+    constraint_errors = []
+    if constraints['max_consecutive_days'] > 5:
+        constraint_errors.append(f"❌ This resource has {constraints['max_consecutive_days']} consecutive days (max 5 allowed)")
+    
+    if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
+        constraint_errors.append(f"❌ Only {constraints['min_hours_between_shifts']} hours between shifts on the same day (min 10 required)")
+    
+    if constraints['employmentType'] == 'Full Time':
+        if constraints['week1_violation']:
+            constraint_errors.append(f"❌ Week 1 hours exceed 38 (currently {constraints['week1_hours']:.1f}h)")
+        if constraints['week2_violation']:
+            constraint_errors.append(f"❌ Week 2 hours exceed 38 (currently {constraints['week2_hours']:.1f}h)")
+        if constraints['total_violation']:
+            constraint_errors.append(f"❌ Total hours exceed 76 (currently {constraints['total_hours']:.1f}h)")
+    elif constraints['employmentType'] == 'Part Time':
+        if constraints['week1_violation']:
+            constraint_errors.append(f"❌ Week 1 hours exceed contracted {constraints['contractedHours']}h (currently {constraints['week1_hours']:.1f}h)")
+        if constraints['week2_violation']:
+            constraint_errors.append(f"❌ Week 2 hours exceed contracted {constraints['contractedHours']}h (currently {constraints['week2_hours']:.1f}h)")
+        if constraints['total_violation']:
+            constraint_errors.append(f"❌ Total hours exceed contracted {constraints['contractedHours']*2}h (currently {constraints['total_hours']:.1f}h)")
+    
+    if constraint_errors:
         st.markdown("""
-        <div class="sidebar-header">
-            <h2>🔍 Filters</h2>
+        <div class="alert alert-danger">
+            <strong>⚠️ Constraint Violations Detected</strong>
+            <ul>
+        """, unsafe_allow_html=True)
+        for error in constraint_errors:
+            st.markdown(f'<li>{error}</li>', unsafe_allow_html=True)
+        st.markdown("</ul></div>", unsafe_allow_html=True)
+        
+def display_resource_details(resource_details):
+    st.markdown("""
+    <div class="card">
+        <div class="card-header">
+            <span class="icon">👤</span> Resource Details
+        </div>
+        <div class="resource-details">
+            <div class="resource-detail">
+                <span class="detail-label">Name</span>
+                <span class="detail-value">{fullName}</span>
+            </div>
+            <div class="resource-detail">
+                <span class="detail-label">Employment Type</span>
+                <span class="detail-value">{employmentType}</span>
+            </div>
+            <div class="resource-detail">
+                <span class="detail-label">Contracted Hours</span>
+                <span class="detail-value">{hoursPerWeek}/week</span>
+            </div>
+            <div class="resource-detail">
+                <span class="detail-label">Primary Location</span>
+                <span class="detail-value">{primaryLocation}</span>
+            </div>
+        </div>
+    </div>
+    """.format(
+        fullName=resource_details['fullName'],
+        employmentType=resource_details['employmentType'],
+        hoursPerWeek=resource_details.get('hoursPerWeek', 38),
+        primaryLocation=resource_details.get('primaryLocation', 'Unknown')
+    ), unsafe_allow_html=True)
+
+def display_constraints(constraints):
+    consecutive_class = "metric-card"
+    if constraints['max_consecutive_days'] >= 5:
+        consecutive_class = "metric-card alert-danger"
+    
+    hours_class = "metric-card"
+    if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
+        hours_class = "metric-card alert-danger"
+    
+    st.markdown("""
+    <div class="metric-container">
+        <div class="{consecutive_class}">
+            <div class="metric-value">{max_consecutive_days}/5</div>
+            <div class="metric-label">Consecutive Days</div>
+        </div>
+        <div class="{hours_class}">
+            <div class="metric-value">{min_hours_between_shifts}h</div>
+            <div class="metric-label">Min Between Shifts</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value">{week1_hours:.1f}h</div>
+            <div class="metric-label">Week 1 Hours</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value">{week2_hours:.1f}h</div>
+            <div class="metric-label">Week 2 Hours</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value">{total_hours:.1f}h</div>
+            <div class="metric-label">Total Hours</div>
+        </div>
+    </div>
+    """.format(
+        max_consecutive_days=constraints['max_consecutive_days'],
+        min_hours_between_shifts=constraints['min_hours_between_shifts'],
+        week1_hours=constraints['week1_hours'],
+        week2_hours=constraints['week2_hours'],
+        total_hours=constraints['total_hours'],
+        consecutive_class=consecutive_class,
+        hours_class=hours_class
+    ), unsafe_allow_html=True)
+
+def display_appointment_card(row):
+    # Format the date and time display to include days
+    start_datetime = pd.to_datetime(row['StartDateTime'])
+    end_datetime = pd.to_datetime(row['EndDateTime'])
+    
+    display_start = start_datetime.strftime('%a, %m/%d/%Y %I:%M %p')
+    display_end = end_datetime.strftime('%a, %m/%d/%Y %I:%M %p')
+    
+    st.markdown(f"""
+    <div class="appointment-card">
+        <div class="appointment-header">
+            <div class="appointment-title">{row['Name']}</div>
+            <div class="appointment-time">{row['DurationHours']:.2f}h</div>
+        </div>
+        <div class="appointment-time">{display_start} to {display_end}</div>
+        <div style="margin-top: 0.5rem;">
+            <span class="badge badge-primary">{row['Participant']}</span>
+            <span class="badge badge-secondary">{row['DayOfWeek']}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def display_day_tabs(days, selected_day, week_num=None):
+    # Define all possible days in order
+    all_days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    
+    # Create columns for each day
+    cols = st.columns(len(all_days))
+    
+    for i, day in enumerate(all_days):
+        with cols[i]:
+            # Include week_num in the key if provided
+            key = f"day_{day}_{week_num}" if week_num is not None else f"day_{day}"
+            if st.button(day, key=key, disabled=(day not in days)):
+                selected_day = day
+    
+    # Show which day is currently selected
+    st.markdown(f"**Showing appointments for:** {selected_day}")
+    return selected_day
+
+def display_resource_constraints(resource_name, location):
+    """Show current constraints without adding potential assignment hours"""
+    constraints = calculate_constraints(resource_name, location)
+    
+    # Display constraints in metrics cards
+    consecutive_class = "metric-card"
+    if constraints['max_consecutive_days'] > 5:
+        consecutive_class = "metric-card alert-danger"
+    
+    hours_class = "metric-card"
+    if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
+        hours_class = "metric-card alert-danger"
+    
+    week1_class = "metric-card"
+    if constraints['week1_violation']:
+        week1_class = "metric-card alert-danger"
+    
+    week2_class = "metric-card"
+    if constraints['week2_violation']:
+        week2_class = "metric-card alert-danger"
+    
+    total_class = "metric-card"
+    if constraints['total_violation']:
+        total_class = "metric-card alert-danger"
+    
+    st.markdown("""
+    <div class="metric-container">
+        <div class="{consecutive_class}">
+            <div class="metric-value">{max_consecutive_days}/5</div>
+            <div class="metric-label">Consecutive Days</div>
+        </div>
+        <div class="{hours_class}">
+            <div class="metric-value">{min_hours_between_shifts}h</div>
+            <div class="metric-label">Min Between Shifts</div>
+        </div>
+        <div class="{week1_class}">
+            <div class="metric-value">{week1_hours:.1f}h</div>
+            <div class="metric-label">Week 1 Hours</div>
+        </div>
+        <div class="{week2_class}">
+            <div class="metric-value">{week2_hours:.1f}h</div>
+            <div class="metric-label">Week 2 Hours</div>
+        </div>
+        <div class="{total_class}">
+            <div class="metric-value">{total_hours:.1f}h</div>
+            <div class="metric-label">Total Hours</div>
+        </div>
+    </div>
+    """.format(
+        max_consecutive_days=constraints['max_consecutive_days'],
+        min_hours_between_shifts=constraints['min_hours_between_shifts'],
+        week1_hours=constraints['week1_hours'],
+        week2_hours=constraints['week2_hours'],
+        total_hours=constraints['total_hours'],
+        consecutive_class=consecutive_class,
+        hours_class=hours_class,
+        week1_class=week1_class,
+        week2_class=week2_class,
+        total_class=total_class
+    ), unsafe_allow_html=True)
+
+    # Validate constraints
+    constraint_errors = []
+    if constraints['max_consecutive_days'] > 5:
+        constraint_errors.append(f"❌ This resource has {constraints['max_consecutive_days']} consecutive days (max 5 allowed)")
+    
+    if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
+        constraint_errors.append(f"❌ Only {constraints['min_hours_between_shifts']} hours between shifts (min 10 required)")
+    
+    if constraints['employmentType'] == 'Full Time':
+        if constraints['week1_hours'] > 38:
+            constraint_errors.append(f"❌ Week 1 hours exceed 38 (currently {constraints['week1_hours']:.1f}h)")
+        if constraints['week2_hours'] > 38:
+            constraint_errors.append(f"❌ Week 2 hours exceed 38 (currently {constraints['week2_hours']:.1f}h)")
+        if constraints['total_hours'] > 76:
+            constraint_errors.append(f"❌ Total hours exceed 76 (currently {constraints['total_hours']:.1f}h)")
+    elif constraints['employmentType'] == 'Part Time':
+        if constraints['week1_hours'] > constraints['contractedHours']:
+            constraint_errors.append(f"❌ Week 1 hours exceed contracted {constraints['contractedHours']}h (currently {constraints['week1_hours']:.1f}h)")
+        if constraints['week2_hours'] > constraints['contractedHours']:
+            constraint_errors.append(f"❌ Week 2 hours exceed contracted {constraints['contractedHours']}h (currently {constraints['week2_hours']:.1f}h)")
+        if constraints['total_hours'] > (constraints['contractedHours'] * 2):
+            constraint_errors.append(f"❌ Total hours exceed contracted {constraints['contractedHours']*2}h (currently {constraints['total_hours']:.1f}h)")
+    
+    if constraint_errors:
+        st.markdown("""
+        <div class="alert alert-danger">
+            <strong>⚠️ Constraint Violations Detected</strong>
+            <ul>
+        """, unsafe_allow_html=True)
+        for error in constraint_errors:
+            st.markdown(f'<li>{error}</li>', unsafe_allow_html=True)
+        st.markdown("</ul></div>", unsafe_allow_html=True)
+
+def display_assigned_tab(selected_location, selected_employment_type, selected_resource):
+    resources = get_resources_by_location(
+        selected_location,
+        selected_employment_type
+    )
+
+    if resources:
+        new_resource = st.selectbox(
+            "Select Resource:",
+            resources,
+            key="assigned_resource_selectbox"
+        )
+
+        if new_resource != selected_resource:
+            st.session_state.selected_resource = new_resource
+            st.rerun()
+
+        if selected_resource:
+            appointments = get_appointments_by_resource_and_location(
+                selected_resource,
+                selected_location
+            )
+
+            if not appointments.empty:
+                if not pd.api.types.is_datetime64_any_dtype(appointments['StartDateTime']):
+                    appointments['StartDateTime'] = pd.to_datetime(appointments['StartDateTime'])
+                if not pd.api.types.is_datetime64_any_dtype(appointments['EndDateTime']):
+                    appointments['EndDateTime'] = pd.to_datetime(appointments['EndDateTime'])
+
+                st.markdown(f"""
+                <div class="card">
+                    <div class="card-header">
+                        <span class="icon">📅</span> {selected_resource}'s Schedule at {selected_location}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                resource_details = get_resource_details(selected_resource)
+                display_resource_details(resource_details)
+                display_resource_constraints(selected_resource, selected_location)
+
+                all_days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+                appointments['Date'] = appointments['StartDateTime'].dt.date
+                appointments['DayOfWeek'] = appointments['StartDateTime'].dt.day_name()
+
+                week1_appointments = appointments[appointments['Week'] == 1]
+                week2_appointments = appointments[appointments['Week'] == 2]
+
+                week1_dates = week1_appointments['StartDateTime'].dt.date.unique()
+                week2_dates = week2_appointments['StartDateTime'].dt.date.unique()
+
+                week_tab1, week_tab2 = st.tabs([
+                    f"📅 Week 1 ({min(week1_dates).strftime('%b %d')} - {max(week1_dates).strftime('%b %d')})" if len(week1_dates) > 0 else "📅 Week 1",
+                    f"📅 Week 2 ({min(week2_dates).strftime('%b %d')} - {max(week2_dates).strftime('%b %d')})" if len(week2_dates) > 0 else "📅 Week 2"
+                ])
+
+                def render_week(week_appointments, label):
+                    if not week_appointments.empty:
+                        unique_days = [
+                            f"{day} ({week_appointments[week_appointments['DayOfWeek'] == day]['StartDateTime'].dt.strftime('%b %d').iloc[0]})"
+                            if not week_appointments[week_appointments['DayOfWeek'] == day].empty else f"{day}"
+                            for day in all_days
+                        ]
+
+                        st.subheader(f"{label} - {selected_resource}")
+                        cols = st.columns(7)
+
+                        for i, day in enumerate(unique_days):
+                            with cols[i]:
+                                st.markdown(f"""
+                                <div class="weekly-header" style="text-align:center; font-weight:bold;">
+                                    {day.split()[0][:3]}<br>{day.split('(')[1][:-1] if '(' in day else ''}
+                                </div>
+                                <div class="weekly-day-column">
+                                """, unsafe_allow_html=True)
+
+                        appointments_by_day = {day: [] for day in all_days}
+                        for _, row in week_appointments.iterrows():
+                            day = row['DayOfWeek']
+                            start_time = row['StartDateTime'].strftime('%I:%M %p')
+                            end_time = row['EndDateTime'].strftime('%I:%M %p')
+                            duration = f"{row['DurationHours']:.1f}h"
+                            appointments_by_day[day].append(
+                                f"<span class='time-range'>{start_time} - {end_time}</span><br>"
+                                f"<span class='duration'>({duration})</span>"
+                            )
+
+                        max_appointments = max(len(appts) for appts in appointments_by_day.values())
+                        for i in range(max_appointments):
+                            cols = st.columns(7)
+                            for j, day in enumerate(all_days):
+                                with cols[j]:
+                                    if i < len(appointments_by_day[day]):
+                                        st.markdown(f"""
+                                        <div class="weekly-appointment">
+                                            {appointments_by_day[day][i]}
+                                        </div>
+                                        """, unsafe_allow_html=True)
+
+                        cols = st.columns(7)
+                        for col in cols:
+                            with col:
+                                st.markdown("</div>", unsafe_allow_html=True)
+
+                        total_hours = week_appointments['DurationHours'].sum()
+                        st.markdown(f"""
+                        <div class="total-hours">
+                            Total Hours: {total_hours:.2f} hours
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📅</div>
+                            <div class="empty-state-text">No appointments</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                with week_tab1:
+                    render_week(week1_appointments, "Week 1 Schedule")
+
+                with week_tab2:
+                    render_week(week2_appointments, "Week 2 Schedule")
+
+            else:
+                st.markdown("""
+                    <div class="empty-state">
+                        <div class="empty-state-icon">⚠️</div>
+                        <div class="empty-state-text">
+                            No appointments found for {resource} at {location}
+                        </div>
+                    </div>
+                    """.format(
+                    resource=selected_resource,
+                    location=selected_location
+                ), unsafe_allow_html=True)
+
+                
+def display_unassigned_tab(selected_location, selected_employment_type):
+    # Show unassigned appointments
+    unassigned_appointments = get_unassigned_appointments(selected_location)
+    
+    if not unassigned_appointments.empty:
+        st.markdown(f"""
+        <div class="card">
+            <div class="card-header">
+                <span class="icon">🚨</span> Unassigned Appointments at {selected_location}
+            </div>
         </div>
         """, unsafe_allow_html=True)
         
-        # Initialize session state
-        if 'expanded_appointment' not in st.session_state:
-            st.session_state.expanded_appointment = None
-        if 'selected_location' not in st.session_state:
-            st.session_state.selected_location = None
-        if 'selected_resource' not in st.session_state:
-            st.session_state.selected_resource = None
-        if 'selected_employment_type' not in st.session_state:
-            st.session_state.selected_employment_type = 'All'
+        # Get all resources (not filtered by location)
+        all_resources_df = get_all_resources()
+        # Get local resources
+        local_resources = get_resources_by_location(
+            selected_location, 
+            selected_employment_type
+        )
+        
+        # Week selection tabs
+        week_tab1, week_tab2 = st.tabs(["Week 1", "Week 2"])
+        
+        with week_tab1:
+            week1_appointments = unassigned_appointments[unassigned_appointments['Week'] == 1]
+            if not week1_appointments.empty:
+                # Get unique days in week 1
+                days = week1_appointments['DayOfWeek'].unique().tolist()
+                selected_day = st.session_state.get('selected_day_unassigned_week1', 'Monday')
+                
+                # Display day tabs (all days shown, disabled if no appointments)
+                selected_day = display_day_tabs(days, selected_day, week_num="unassigned_1")
+                st.session_state.selected_day_unassigned_week1 = selected_day
+                
+                # Filter appointments for selected day
+                day_appointments = week1_appointments[week1_appointments['DayOfWeek'] == selected_day]
+                
+                if not day_appointments.empty:
+                    # Display appointments
+                    for _, row in day_appointments.iterrows():
+                        appt_id = row['AppointmentID']
+                        start_datetime = pd.to_datetime(row['StartDateTime'])
+                        end_datetime = pd.to_datetime(row['EndDateTime'])
+                        
+                        # Initialize session state for this appointment
+                        if f"assigned_{appt_id}" not in st.session_state:
+                            st.session_state[f"assigned_{appt_id}"] = False
+                            st.session_state[f"selected_resource_{appt_id}"] = None
+                        
+                        # Check if appointment is already assigned
+                        with db_connection() as conn:
+                            check_query = "SELECT maica__Resources__c FROM NewAppointments WHERE Id = ?"
+                            assigned_to = pd.read_sql(check_query, conn, params=[appt_id]).iloc[0,0]
+                        
+                        if assigned_to and not st.session_state[f"assigned_{appt_id}"]:
+                            st.session_state[f"assigned_{appt_id}"] = True
+                            st.session_state[f"selected_resource_{appt_id}"] = assigned_to
+                        
+                        with st.expander(f"{row['Name']} - {row['DisplayStart']} to {row['DisplayEnd']} ({row['DurationHours']:.2f}h)", expanded=True):
+                            if st.session_state[f"assigned_{appt_id}"]:
+                                st.warning(f"⚠️ This appointment is already assigned to {st.session_state[f'selected_resource_{appt_id}']}")
+                                continue
+                            
+                            # Create two columns for the dropdowns
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                # Local resources dropdown
+                                local_selected = st.selectbox(
+                                    "Assign Local Resource:",
+                                    [""] + local_resources,
+                                    key=f"local_select_{appt_id}"
+                                )
+                            
+                            with col2:
+                                # All resources dropdown
+                                all_selected = st.selectbox(
+                                    "Or select from ALL Resources:",
+                                    [""] + all_resources_df['resource_name'].unique().tolist(),
+                                    format_func=lambda x: f"{x} ({all_resources_df[all_resources_df['resource_name'] == x]['primaryLocation'].values[0]})" if x else "Select...",
+                                    key=f"all_select_{appt_id}"
+                                )
+                            
+                            # Determine which resource is selected
+                            selected_resource = all_selected if all_selected else local_selected
+                            
+                            # Update session state when a new resource is selected
+                            if selected_resource:
+                                st.session_state[f"selected_resource_{appt_id}"] = selected_resource
+                            
+                            # Get the resource to display
+                            display_resource = st.session_state[f"selected_resource_{appt_id}"]
+                            
+                            # Show resource details if one is selected or after assignment
+                            if display_resource:
+                                resource_details = get_resource_details(display_resource)
+                                display_resource_details(resource_details)
+                                
+                                # Show CURRENT constraints (without adding potential assignment)
+                                st.markdown("**Current Constraints:**")
+                                current_constraints = calculate_constraints(display_resource, selected_location)
+                                display_constraints(current_constraints)
+                                
+                                # Assign button with comprehensive validation
+                                if st.button("✨ Assign Resource", key=f"assign_btn_{appt_id}"):
+                                    if not selected_resource:
+                                        st.error("Please select a resource to assign")
+                                    else:
+                                        # Validate the potential assignment
+                                        is_valid, message = validate_assignment(
+                                            selected_resource,
+                                            selected_location,
+                                            row['StartDateTime'],
+                                            row['EndDateTime'],
+                                            week_num=1
+                                        )
+                                        
+                                        if not is_valid:
+                                            st.error(f"Cannot assign: {message}")
+                                        else:
+                                            # Check weekly hours constraints
+                                            appt_hours = row['DurationHours']
+                                            week_num = row['Week']
+                                            
+                                            if resource_details['employmentType'] == 'Full Time':
+                                                if week_num == 1 and (current_constraints['week1_hours'] + appt_hours) > 38:
+                                                    st.error(f"Cannot assign - Would exceed Week 1 limit (38h)")
+                                                elif week_num == 2 and (current_constraints['week2_hours'] + appt_hours) > 38:
+                                                    st.error(f"Cannot assign - Would exceed Week 2 limit (38h)")
+                                                elif (current_constraints['total_hours'] + appt_hours) > 76:
+                                                    st.error(f"Cannot assign - Would exceed total limit (76h)")
+                                                else:
+                                                    if assign_resource_to_appointment(appt_id, selected_resource):
+                                                        st.session_state[f"assigned_{appt_id}"] = True
+                                                        st.session_state[f"selected_resource_{appt_id}"] = selected_resource
+                                                        st.success(f"✅ Successfully assigned {selected_resource} to this appointment!")
+                                                        st.rerun()
+                                            elif resource_details['employmentType'] == 'Part Time':
+                                                if week_num == 1 and (current_constraints['week1_hours'] + appt_hours) > resource_details['hoursPerWeek']:
+                                                    st.error(f"Cannot assign - Would exceed Week 1 contracted hours ({resource_details['hoursPerWeek']}h)")
+                                                elif week_num == 2 and (current_constraints['week2_hours'] + appt_hours) > resource_details['hoursPerWeek']:
+                                                    st.error(f"Cannot assign - Would exceed Week 2 contracted hours ({resource_details['hoursPerWeek']}h)")
+                                                elif (current_constraints['total_hours'] + appt_hours) > (resource_details['hoursPerWeek'] * 2):
+                                                    st.error(f"Cannot assign - Would exceed total contracted hours ({resource_details['hoursPerWeek']*2}h)")
+                                                else:
+                                                    if assign_resource_to_appointment(appt_id, selected_resource):
+                                                        st.session_state[f"assigned_{appt_id}"] = True
+                                                        st.session_state[f"selected_resource_{appt_id}"] = selected_resource
+                                                        st.success(f"✅ Successfully assigned {selected_resource} to this appointment!")
+                                                        st.rerun()
+                else:
+                    st.markdown(f"""
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📅</div>
+                        <div class="empty-state-text">No unassigned appointments on {selected_day}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                <div class="empty-state">
+                    <div class="empty-state-icon">📅</div>
+                    <div class="empty-state-text">No unassigned appointments in Week 1</div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        with week_tab2:
+            week2_appointments = unassigned_appointments[unassigned_appointments['Week'] == 2]
+            if not week2_appointments.empty:
+                # Get unique days in week 2
+                days = week2_appointments['DayOfWeek'].unique().tolist()
+                selected_day = st.session_state.get('selected_day_unassigned_week2', 'Monday')
+                
+                # Display day tabs (all days shown, disabled if no appointments)
+                selected_day = display_day_tabs(days, selected_day, week_num="unassigned_2")
+                st.session_state.selected_day_unassigned_week2 = selected_day
+                
+                # Filter appointments for selected day
+                day_appointments = week2_appointments[week2_appointments['DayOfWeek'] == selected_day]
+                
+                if not day_appointments.empty:
+                    # Display appointments
+                    for _, row in day_appointments.iterrows():
+                        appt_id = row['AppointmentID']
+                        start_datetime = pd.to_datetime(row['StartDateTime'])
+                        end_datetime = pd.to_datetime(row['EndDateTime'])
+                        
+                        # Initialize session state for this appointment
+                        if f"assigned_{appt_id}" not in st.session_state:
+                            st.session_state[f"assigned_{appt_id}"] = False
+                            st.session_state[f"selected_resource_{appt_id}"] = None
+                        
+                        # Check if appointment is already assigned
+                        with db_connection() as conn:
+                            check_query = "SELECT maica__Resources__c FROM NewAppointments WHERE Id = ?"
+                            assigned_to = pd.read_sql(check_query, conn, params=[appt_id]).iloc[0,0]
+                        
+                        if assigned_to and not st.session_state[f"assigned_{appt_id}"]:
+                            st.session_state[f"assigned_{appt_id}"] = True
+                            st.session_state[f"selected_resource_{appt_id}"] = assigned_to
+                        
+                        with st.expander(f"{row['Name']} - {row['DisplayStart']} to {row['DisplayEnd']} ({row['DurationHours']:.2f}h)", expanded=True):
+                            if st.session_state[f"assigned_{appt_id}"]:
+                                st.warning(f"⚠️ This appointment is already assigned to {st.session_state[f'selected_resource_{appt_id}']}")
+                                continue
+                            
+                            # Create two columns for the dropdowns
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                # Local resources dropdown
+                                local_selected = st.selectbox(
+                                    "Assign Local Resource:",
+                                    [""] + local_resources,
+                                    key=f"local_select_{appt_id}_week2"
+                                )
+                            
+                            with col2:
+                                # All resources dropdown
+                                all_selected = st.selectbox(
+                                    "Or select from ALL Resources:",
+                                    [""] + all_resources_df['resource_name'].unique().tolist(),
+                                    format_func=lambda x: f"{x} ({all_resources_df[all_resources_df['resource_name'] == x]['primaryLocation'].values[0]})" if x else "Select...",
+                                    key=f"all_select_{appt_id}_week2"
+                                )
+                            
+                            # Determine which resource is selected
+                            selected_resource = all_selected if all_selected else local_selected
+                            
+                            # Update session state when a new resource is selected
+                            if selected_resource:
+                                st.session_state[f"selected_resource_{appt_id}"] = selected_resource
+                            
+                            # Get the resource to display
+                            display_resource = st.session_state[f"selected_resource_{appt_id}"]
+                            
+                            # Show resource details if one is selected or after assignment
+                            if display_resource:
+                                resource_details = get_resource_details(display_resource)
+                                display_resource_details(resource_details)
+                                
+                                # Show CURRENT constraints (without adding potential assignment)
+                                st.markdown("**Current Constraints:**")
+                                current_constraints = calculate_constraints(display_resource, selected_location)
+                                display_constraints(current_constraints)
+                                
+                                # Assign button with comprehensive validation
+                                if st.button("✨ Assign Resource", key=f"assign_btn_{appt_id}_week2"):
+                                    if not selected_resource:
+                                        st.error("Please select a resource to assign")
+                                    else:
+                                        # Validate the potential assignment
+                                        is_valid, message = validate_assignment(
+                                            selected_resource,
+                                            selected_location,
+                                            row['StartDateTime'],
+                                            row['EndDateTime'],
+                                            week_num=2
+                                        )
+                                        
+                                        if not is_valid:
+                                            st.error(f"Cannot assign: {message}")
+                                        else:
+                                            # Check weekly hours constraints
+                                            appt_hours = row['DurationHours']
+                                            week_num = row['Week']
+                                            
+                                            if resource_details['employmentType'] == 'Full Time':
+                                                if week_num == 1 and (current_constraints['week1_hours'] + appt_hours) > 38:
+                                                    st.error(f"Cannot assign - Would exceed Week 1 limit (38h)")
+                                                elif week_num == 2 and (current_constraints['week2_hours'] + appt_hours) > 38:
+                                                    st.error(f"Cannot assign - Would exceed Week 2 limit (38h)")
+                                                elif (current_constraints['total_hours'] + appt_hours) > 76:
+                                                    st.error(f"Cannot assign - Would exceed total limit (76h)")
+                                                else:
+                                                    if assign_resource_to_appointment(appt_id, selected_resource):
+                                                        st.session_state[f"assigned_{appt_id}"] = True
+                                                        st.session_state[f"selected_resource_{appt_id}"] = selected_resource
+                                                        st.success(f"✅ Successfully assigned {selected_resource} to this appointment!")
+                                                        st.rerun()
+                                            elif resource_details['employmentType'] == 'Part Time':
+                                                if week_num == 1 and (current_constraints['week1_hours'] + appt_hours) > resource_details['hoursPerWeek']:
+                                                    st.error(f"Cannot assign - Would exceed Week 1 contracted hours ({resource_details['hoursPerWeek']}h)")
+                                                elif week_num == 2 and (current_constraints['week2_hours'] + appt_hours) > resource_details['hoursPerWeek']:
+                                                    st.error(f"Cannot assign - Would exceed Week 2 contracted hours ({resource_details['hoursPerWeek']}h)")
+                                                elif (current_constraints['total_hours'] + appt_hours) > (resource_details['hoursPerWeek'] * 2):
+                                                    st.error(f"Cannot assign - Would exceed total contracted hours ({resource_details['hoursPerWeek']*2}h)")
+                                                else:
+                                                    if assign_resource_to_appointment(appt_id, selected_resource):
+                                                        st.session_state[f"assigned_{appt_id}"] = True
+                                                        st.session_state[f"selected_resource_{appt_id}"] = selected_resource
+                                                        st.success(f"✅ Successfully assigned {selected_resource} to this appointment!")
+                                                        st.rerun()
+                else:
+                    st.markdown(f"""
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📅</div>
+                        <div class="empty-state-text">No unassigned appointments on {selected_day}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                <div class="empty-state">
+                    <div class="empty-state-icon">📅</div>
+                    <div class="empty-state-text">No unassigned appointments in Week 2</div>
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class="empty-state success">
+            <div class="empty-state-icon">🎉</div>
+            <div class="empty-state-text">
+                All appointments at {location} have resources assigned!
+            </div>
+        </div>
+        """.format(
+            location=selected_location
+        ), unsafe_allow_html=True)
 
+def main():
+    # Initialize session state
+    if 'selected_location' not in st.session_state:
+        st.session_state.selected_location = None
+    if 'selected_resource' not in st.session_state:
+        st.session_state.selected_resource = None
+    if 'selected_employment_type' not in st.session_state:
+        st.session_state.selected_employment_type = 'All'
+
+    # Sidebar with filters
+    with st.sidebar:
+        # Logo at the very top (smaller size)
+        st.image("image.png", width=100)
+    
+        # Container for proper spacing
+        st.markdown('<div class="sidebar-header-container">', unsafe_allow_html=True)
+        
+        # Filters section
+        st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem;">FILTERS</div>', unsafe_allow_html=True)
+        
+        
         # Get locations with participant names for display
         location_options = get_locations_with_participants()
         
@@ -446,7 +1504,7 @@ def main():
         selected_display = st.selectbox(
             "Select Roster:", 
             options=options,
-            key="main_unique_location_selectbox"
+            key="location_selectbox"
         )
         
         # Find the corresponding actual location
@@ -461,12 +1519,21 @@ def main():
             st.session_state.selected_location = selected_location
             st.session_state.selected_resource = None  # Reset resource selection
             st.rerun()
+            
+            st.markdown('</div>', unsafe_allow_html=True)  # Close spacing container
+            
+            st.markdown("""
+                    <div class="sidebar-footer">
+                        Project Nahl - Powered by Data Science Team
+                    </div>
+                    """, unsafe_allow_html=True)
 
     # Main content
     st.markdown("""
-    <div class="main-header">
-        <h1>📊 Roster Management Pro</h1>
-        <p class="subtitle">Optimize your workforce scheduling with powerful analytics</p>
+    <div class="card">
+        <div class="card-header">
+            <span class="icon">📅</span> Shift Management
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -507,566 +1574,21 @@ def main():
                 st.session_state.selected_resource = None
                 st.rerun()
 
-        # Get resources for selected location and employment type
-        resources = get_resources_by_location(
-            st.session_state.selected_location, 
-            st.session_state.selected_employment_type
-        )
-
-        if resources:
-            # Use tabs to separate assigned and unassigned appointments
-            tab_assigned, tab_unassigned = st.tabs(["📅 Assigned Appointments", "🆔 Unassigned Appointments"])
-
-            with tab_assigned:
-                # Resource selection with unique key
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    new_resource = st.selectbox(
-                        "Select Resource:",
-                        resources,
-                        key="main_assigned_resource_selectbox"
-                    )
-                
-                # Update resource selection
-                if new_resource != st.session_state.selected_resource:
-                    st.session_state.selected_resource = new_resource
-                    st.rerun()
-                
-                if st.session_state.selected_resource:
-                    # Get appointments for selected resource
-                    appointments = get_appointments_by_resource_and_location(
-                        st.session_state.selected_resource, 
-                        st.session_state.selected_location
-                    )
-                    
-                    if not appointments.empty:
-                        st.markdown(f"""
-                        <div class="resource-header">
-                            <h2>👤 {st.session_state.selected_resource}</h2>
-                            <p class="resource-subheader">at {st.session_state.selected_location} • {len(appointments)} Appointments</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Get constraints
-                        constraints = calculate_constraints(
-                            st.session_state.selected_resource, 
-                            st.session_state.selected_location
-                        )
-                        
-                        # Display resource details
-                        resource_details = get_resource_details(st.session_state.selected_resource)
-                        
-                        st.markdown("""
-                        <div class="resource-card">
-                            <div class="resource-card-header">
-                                <h3>Resource Details</h3>
-                            </div>
-                            <div class="resource-card-body">
-                                <div class="resource-detail">
-                                    <span class="detail-icon">🧑‍💼</span>
-                                    <span class="detail-label">Name:</span>
-                                    <span class="detail-value">{fullName}</span>
-                                </div>
-                                <div class="resource-detail">
-                                    <span class="detail-icon">📝</span>
-                                    <span class="detail-label">Type:</span>
-                                    <span class="detail-value">{employmentType}</span>
-                                </div>
-                                <div class="resource-detail">
-                                    <span class="detail-icon">⏰</span>
-                                    <span class="detail-label">Contracted Hours:</span>
-                                    <span class="detail-value">{hoursPerWeek}/week</span>
-                                </div>
-                                <div class="resource-detail">
-                                    <span class="detail-icon">📍</span>
-                                    <span class="detail-label">Primary Location:</span>
-                                    <span class="detail-value">{primaryLocation}</span>
-                                </div>
-                            </div>
-                        </div>
-                        """.format(
-                            fullName=resource_details['fullName'],
-                            employmentType=resource_details['employmentType'],
-                            hoursPerWeek=resource_details.get('hoursPerWeek', 38),
-                            primaryLocation=resource_details.get('primaryLocation', 'Unknown')
-                        ), unsafe_allow_html=True)
-                        
-                        # Display constraints in metrics cards
-                        st.markdown("""
-                        <div class="metrics-container">
-                            <div class="metric-card {consecutive_class}">
-                                <div class="metric-value">{max_consecutive_days}/5</div>
-                                <div class="metric-label">Consecutive Days {consecutive_icon}</div>
-                            </div>
-                            <div class="metric-card {hours_class}">
-                                <div class="metric-value">{min_hours_between_shifts}h</div>
-                                <div class="metric-label">Min Between Shifts {hours_icon}</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="metric-value">{week1_hours:.1f}h</div>
-                                <div class="metric-label">Week 1 Hours</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="metric-value">{week2_hours:.1f}h</div>
-                                <div class="metric-label">Week 2 Hours</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="metric-value">{total_hours:.1f}h</div>
-                                <div class="metric-label">Total Hours</div>
-                            </div>
-                        </div>
-                        """.format(
-                            max_consecutive_days=constraints['max_consecutive_days'],
-                            consecutive_icon="✅" if constraints['max_consecutive_days'] <= 5 else "❌",
-                            consecutive_class="metric-success" if constraints['max_consecutive_days'] <= 5 else "metric-danger",
-                            min_hours_between_shifts=constraints['min_hours_between_shifts'],
-                            hours_icon="✅" if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) >= 10 else "❌",
-                            hours_class="metric-success" if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) >= 10 else "metric-danger",
-                            week1_hours=constraints['week1_hours'],
-                            week2_hours=constraints['week2_hours'],
-                            total_hours=constraints['total_hours']
-                        ), unsafe_allow_html=True)
-
-                        # Validate constraints
-                        constraint_errors = []
-                        if constraints['max_consecutive_days'] > 5:
-                            constraint_errors.append(f"❌ This resource has {constraints['max_consecutive_days']} consecutive days (max 5 allowed)")
-                        
-                        if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
-                            constraint_errors.append(f"❌ Only {constraints['min_hours_between_shifts']} hours between shifts (min 10 required)")
-                        
-                        if constraint_errors:
-                            st.markdown("""
-                            <div class="constraint-alert">
-                                <div class="constraint-alert-header">
-                                    ⚠️ Constraint Violations Detected
-                                </div>
-                                <div class="constraint-alert-body">
-                            """, unsafe_allow_html=True)
-                            for error in constraint_errors:
-                                st.markdown(f'<div class="constraint-error">{error}</div>', unsafe_allow_html=True)
-                            st.markdown("</div></div>", unsafe_allow_html=True)
-                        
-                        st.markdown("---")
-                        
-                        # Display all appointments
-                        st.markdown("""
-                        <div class="section-header">
-                            <h3>📋 Appointment Schedule</h3>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        for idx, row in appointments.iterrows():
-                            appt_id = row['AppointmentID']
-                            
-                            # Create appointment card
-                            st.markdown(f"""
-                            <div class="appointment-card {'expanded' if st.session_state.expanded_appointment == appt_id else ''}">
-                                <div class="appointment-card-header">
-                                    <div class="appointment-title">
-                                        <strong>{row['Name']}</strong>
-                                    </div>
-                                    <div class="appointment-time">
-                                        {row['DisplayStart']} to {row['DisplayEnd']} • {row['DurationHours']:.2f}h
-                                    </div>
-                                    <div class="appointment-actions">
-                            """, unsafe_allow_html=True)
-                            
-                            # Toggle button for expand/collapse
-                            if st.button("📝 Details", key=f"expand_assigned_{appt_id}"):
-                                if st.session_state.expanded_appointment == appt_id:
-                                    st.session_state.expanded_appointment = None
-                                else:
-                                    st.session_state.expanded_appointment = appt_id
-                                st.rerun()
-                            
-                            st.markdown("""
-                                    </div>
-                                </div>
-                            """, unsafe_allow_html=True)
-                            
-                            # Expanded details section
-                            if st.session_state.expanded_appointment == appt_id:
-                                with st.container():
-                                    st.markdown("""
-                                    <div class='appointment-card-body'>
-                                        <div class="appointment-detail">
-                                            <span class="detail-icon">👤</span>
-                                            <span class="detail-label">Participant:</span>
-                                            <span class="detail-value">{participant}</span>
-                                        </div>
-                                        <div class="appointment-detail">
-                                            <span class="detail-icon">⏰</span>
-                                            <span class="detail-label">Start:</span>
-                                            <span class="detail-value">{displayStart}</span>
-                                        </div>
-                                        <div class="appointment-detail">
-                                            <span class="detail-icon">🕒</span>
-                                            <span class="detail-label">End:</span>
-                                            <span class="detail-value">{displayEnd}</span>
-                                        </div>
-                                        <div class="appointment-detail">
-                                            <span class="detail-icon">⏱️</span>
-                                            <span class="detail-label">Duration:</span>
-                                            <span class="detail-value">{durationHours:.2f} hours</span>
-                                        </div>
-                                    </div>
-                                    """.format(
-                                        participant=row['Participant'],
-                                        displayStart=row['DisplayStart'],
-                                        displayEnd=row['DisplayEnd'],
-                                        durationHours=row['DurationHours']
-                                    ), unsafe_allow_html=True)
-                            
-                            st.markdown("</div>", unsafe_allow_html=True)
-                    else:
-                        st.markdown("""
-                        <div class="empty-state">
-                            <div class="empty-state-icon">⚠️</div>
-                            <div class="empty-state-text">
-                                No appointments found for {resource} at {location}
-                            </div>
-                        </div>
-                        """.format(
-                            resource=st.session_state.selected_resource,
-                            location=st.session_state.selected_location
-                        ), unsafe_allow_html=True)
-            
-            with tab_unassigned:
-                # Show unassigned appointments
-                unassigned_appointments = get_unassigned_appointments(st.session_state.selected_location)
-                
-                if not unassigned_appointments.empty:
-                    st.markdown(f"""
-                    <div class="section-header">
-                        <h3>🚨 Unassigned Appointments at {st.session_state.selected_location}</h3>
-                        <p class="section-subheader">{len(unassigned_appointments)} unassigned shifts</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Get all resources (not filtered by location)
-                    all_resources_df = get_all_resources()
-                    # Get local resources
-                    local_resources = get_resources_by_location(
-                        st.session_state.selected_location, 
-                        st.session_state.selected_employment_type
-                    )
-                    
-                    for idx, row in unassigned_appointments.iterrows():
-                        appt_id = row['AppointmentID']
-                        start_datetime = pd.to_datetime(row['StartDateTime'])
-                        end_datetime = pd.to_datetime(row['EndDateTime'])
-                        
-                        # Initialize session state for this appointment
-                        if f"assigned_{appt_id}" not in st.session_state:
-                            st.session_state[f"assigned_{appt_id}"] = False
-                            st.session_state[f"selected_resource_{appt_id}"] = None
-                        
-                        # Check if appointment is already assigned
-                        with db_connection() as conn:
-                            check_query = "SELECT maica__Resources__c FROM Appointments WHERE Id = ?"
-                            assigned_to = pd.read_sql(check_query, conn, params=[appt_id]).iloc[0,0]
-                        
-                        if assigned_to and not st.session_state[f"assigned_{appt_id}"]:
-                            st.session_state[f"assigned_{appt_id}"] = True
-                            st.session_state[f"selected_resource_{appt_id}"] = assigned_to
-                        
-                        with st.expander(f"{row['Name']} - {row['DisplayStart']} to {row['DisplayEnd']} ({row['DurationHours']:.2f}h)", expanded=True):
-                            # Show days and times in detail view
-                            st.markdown("""
-                            <div class="unassigned-details">
-                                <div class="appointment-detail">
-                                    <span class="detail-icon">📅</span>
-                                    <span class="detail-label">Day:</span>
-                                    <span class="detail-value">{day_of_week}, {date}</span>
-                                </div>
-                                <div class="appointment-detail">
-                                    <span class="detail-icon">⏰</span>
-                                    <span class="detail-label">Time:</span>
-                                    <span class="detail-value">{start_time} to {end_time}</span>
-                                </div>
-                                <div class="appointment-detail">
-                                    <span class="detail-icon">👤</span>
-                                    <span class="detail-label">Participant:</span>
-                                    <span class="detail-value">{participant}</span>
-                                </div>
-                                <div class="appointment-detail">
-                                    <span class="detail-icon">⏱️</span>
-                                    <span class="detail-label">Duration:</span>
-                                    <span class="detail-value">{durationHours:.2f} hours</span>
-                                </div>
-                            </div>
-                            """.format(
-                                day_of_week=start_datetime.strftime('%A'),
-                                date=start_datetime.strftime('%m/%d/%Y'),
-                                start_time=start_datetime.strftime('%I:%M %p'),
-                                end_time=end_datetime.strftime('%I:%M %p'),
-                                participant=row['Participant'],
-                                durationHours=row['DurationHours']
-                            ), unsafe_allow_html=True)
-                            
-                            if st.session_state[f"assigned_{appt_id}"]:
-                                st.warning(f"⚠️ This appointment is already assigned to {st.session_state[f'selected_resource_{appt_id}']}. Please select another appointment.")
-                                continue
-                            
-                            # Create two columns for the dropdowns
-                            col1, col2 = st.columns(2)
-                            
-                            with col1:
-                                # Local resources dropdown
-                                local_selected = st.selectbox(
-                                    "Assign Local Resource:",
-                                    [""] + local_resources,
-                                    key=f"local_select_{appt_id}"
-                                )
-                            
-                            with col2:
-                                # All resources dropdown
-                                all_selected = st.selectbox(
-                                    "Or select from ALL Resources:",
-                                    [""] + all_resources_df['resource_name'].unique().tolist(),
-                                    format_func=lambda x: f"{x} ({all_resources_df[all_resources_df['resource_name'] == x]['primaryLocation'].values[0]})" if x else "Select...",
-                                    key=f"all_select_{appt_id}"
-                                )
-                            
-                            # Determine which resource is selected
-                            selected_resource = all_selected if all_selected else local_selected
-                            
-                            # Update session state when a new resource is selected
-                            if selected_resource:
-                                st.session_state[f"selected_resource_{appt_id}"] = selected_resource
-                            
-                            # Get the resource to display
-                            display_resource = st.session_state[f"selected_resource_{appt_id}"]
-                            
-                            # Show resource details if one is selected or after assignment
-                            if display_resource:
-                                resource_details = get_resource_details(display_resource)
-                                constraints = calculate_constraints(display_resource, st.session_state.selected_location)
-                                
-                                # Display resource details in a card
-                                st.markdown("""
-                                <div class="resource-card">
-                                    <div class="resource-card-header">
-                                        <h3>Resource Details</h3>
-                                    </div>
-                                    <div class="resource-card-body">
-                                        <div class="resource-detail">
-                                            <span class="detail-icon">🧑‍💼</span>
-                                            <span class="detail-label">Name:</span>
-                                            <span class="detail-value">{fullName}</span>
-                                        </div>
-                                        <div class="resource-detail">
-                                            <span class="detail-icon">📝</span>
-                                            <span class="detail-label">Type:</span>
-                                            <span class="detail-value">{employmentType}</span>
-                                        </div>
-                                        <div class="resource-detail">
-                                            <span class="detail-icon">⏰</span>
-                                            <span class="detail-label">Contracted Hours:</span>
-                                            <span class="detail-value">{hoursPerWeek}/week</span>
-                                        </div>
-                                        <div class="resource-detail">
-                                            <span class="detail-icon">📍</span>
-                                            <span class="detail-label">Primary Location:</span>
-                                            <span class="detail-value">{primaryLocation}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                """.format(
-                                    fullName=resource_details['fullName'],
-                                    employmentType=resource_details['employmentType'],
-                                    hoursPerWeek=resource_details.get('hoursPerWeek', 38),
-                                    primaryLocation=resource_details.get('primaryLocation', 'Unknown')
-                                ), unsafe_allow_html=True)
-                                
-                                # Calculate week numbers (1 or 2) based on rotation start
-                                rotation_start = constraints.get('rotation_start', datetime.now().date())
-                                week_num = 1 if (start_datetime.date() - rotation_start).days < 7 else 2
-                                
-                                # Calculate new hours if this appointment were assigned
-                                new_week1 = constraints['week1_hours']
-                                new_week2 = constraints['week2_hours']
-                                if week_num == 1:
-                                    new_week1 += row['DurationHours']
-                                else:
-                                    new_week2 += row['DurationHours']
-                                new_total = new_week1 + new_week2
-                                
-                                # Check contracted hours constraints
-                                contracted_hours = resource_details.get('hoursPerWeek', 38)
-                                employment_type = resource_details['employmentType']
-                                
-                                # Initialize error flags and messages
-                                week1_class = ""
-                                week2_class = ""
-                                total_class = ""
-                                hours_error = False
-                                error_messages = []
-
-                                if resource_details['employmentType'] == 'Full Time':
-                                    if new_week1 > 38:
-                                        week1_class = "metric-danger"
-                                        hours_error = True
-                                        error_messages.append(f"❌ Week 1 hours would be {new_week1:.1f} (must not exceed 38)")
-                                    elif new_week1 < 38:
-                                        week1_class = "metric-warning"
-                                        error_messages.append(f"⚠️ Week 1 has {new_week1:.1f} hours (should reach 38)")
-                                    
-                                    if new_week2 > 38:
-                                        week2_class = "metric-danger"
-                                        hours_error = True
-                                        error_messages.append(f"❌ Week 2 hours would be {new_week2:.1f} (must not exceed 38)")
-                                    elif new_week2 < 38:
-                                        week2_class = "metric-warning"
-                                        error_messages.append(f"⚠️ Week 2 has {new_week2:.1f} hours (should reach 38)")
-                                    
-                                    if new_total > 76:
-                                        total_class = "metric-danger"
-                                        hours_error = True
-                                        error_messages.append(f"❌ Total hours would be {new_total:.1f} (must not exceed 76)")
-
-                                elif resource_details['employmentType'] == 'Part Time':
-                                    if contracted_hours <= 0 or contracted_hours >= 38:
-                                        hours_error = True
-                                        error_messages.append(f"❌ Invalid contracted hours ({contracted_hours}) for Part-Time (must be 1-37)")
-                                    if new_total > (contracted_hours * 2):
-                                        total_class = "metric-danger"
-                                        hours_error = True
-                                        error_messages.append(f"❌ Total hours would be {new_total:.1f} (must not exceed {contracted_hours*2})")
-                                
-                                # Display constraints in metrics cards
-                                st.markdown(f"""
-                                    <div class="metrics-container">
-                                        <div class="metric-card {week1_class}">
-                                            <div class="metric-value">{new_week1:.1f}h</div>
-                                            <div class="metric-label">Week 1 Hours {'❌' if week1_class == 'metric-danger' else '⚠️' if week1_class == 'metric-warning' else ''}</div>
-                                        </div>
-                                        <div class="metric-card {week2_class}">
-                                            <div class="metric-value">{new_week2:.1f}h</div>
-                                            <div class="metric-label">Week 2 Hours {'❌' if week2_class == 'metric-danger' else '⚠️' if week2_class == 'metric-warning' else ''}</div>
-                                        </div>
-                                        <div class="metric-card {total_class}">
-                                            <div class="metric-value">{new_total:.1f}h</div>
-                                            <div class="metric-label">Total Hours {'❌' if total_class == 'metric-danger' else ''}</div>
-                                        </div>
-                                        <div class="metric-card">
-                                            <div class="metric-value">{constraints['max_consecutive_days']}/5</div>
-                                            <div class="metric-label">Consecutive Days {'✅' if constraints['max_consecutive_days'] <= 5 else '❌'}</div>
-                                        </div>
-                                        <div class="metric-card">
-                                            <div class="metric-value">{constraints['min_hours_between_shifts']}h</div>
-                                            <div class="metric-label">Min Between Shifts {'✅' if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) >= 10 else '❌'}</div>
-                                        </div>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-
-                                # For the warning message
-                                if hours_error:
-                                    st.markdown(f"""
-                                    <div class="hours-warning">
-                                        <p class="hours-warning-text">⚠️ WARNING: {error_messages[0]}</p>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                
-                                # Validate other constraints
-                                constraint_errors = []
-                                if constraints['max_consecutive_days'] > 5:
-                                    constraint_errors.append(f"❌ This resource has {constraints['max_consecutive_days']} consecutive days (max 5 allowed)")
-                                
-                                if constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
-                                    constraint_errors.append(f"❌ Only {constraints['min_hours_between_shifts']} hours between shifts (min 10 required)")
-                                
-                                if constraint_errors:
-                                    st.markdown("""
-                                    <div class="constraint-alert">
-                                        <div class="constraint-alert-header">
-                                            ⚠️ Constraint Violations Detected
-                                        </div>
-                                        <div class="constraint-alert-body">
-                                    """, unsafe_allow_html=True)
-                                    for error in constraint_errors:
-                                        st.markdown(f'<div class="constraint-error">{error}</div>', unsafe_allow_html=True)
-                                    st.markdown("</div></div>", unsafe_allow_html=True)
-                            
-                            # Assign button (only show if not already assigned)
-                            if not st.session_state[f"assigned_{appt_id}"]:
-                                if st.button("✨ Assign Resource", key=f"assign_btn_{appt_id}"):
-                                    if not selected_resource:
-                                        st.error("Please select a resource to assign")
-                                    else:
-                                        # Check constraints before assignment
-                                        constraints = calculate_constraints(selected_resource, st.session_state.selected_location)
-                                        
-                                        # Get existing appointments for this resource
-                                        existing_appointments = get_appointments_by_resource_and_location(
-                                            selected_resource, 
-                                            st.session_state.selected_location
-                                        )
-                                        
-                                        # Check consecutive days constraint (max 5)
-                                        if constraints['max_consecutive_days'] >= 5:
-                                            st.error(f"❌ Cannot assign - {selected_resource} already has {constraints['max_consecutive_days']} consecutive days (max 5 allowed)")
-                                        
-                                        # Check minimum hours between shifts (min 10 hours)
-                                        elif constraints['min_hours_between_shifts'] != 'N/A' and float(constraints['min_hours_between_shifts']) < 10:
-                                            st.error(f"❌ Cannot assign - Only {constraints['min_hours_between_shifts']} hours between shifts (min 10 required)")
-                                        
-                                        # Additional check for the new appointment's timing
-                                        else:
-                                            # Check if this new appointment would violate the 10-hour gap rule
-                                            violation_found = False
-                                            for _, existing_row in existing_appointments.iterrows():
-                                                existing_start = pd.to_datetime(existing_row['StartDateTime'])
-                                                existing_end = pd.to_datetime(existing_row['EndDateTime'])
-                                                
-                                                # Check gap before new appointment
-                                                gap_before = (start_datetime - existing_end).total_seconds() / 3600
-                                                if 0 < gap_before < 10:
-                                                    st.error(f"❌ Cannot assign - Only {gap_before:.1f} hours between new shift and existing shift ending at {existing_row['DisplayEnd']}")
-                                                    violation_found = True
-                                                    break
-                                                
-                                                # Check gap after new appointment
-                                                gap_after = (existing_start - end_datetime).total_seconds() / 3600
-                                                if 0 < gap_after < 10:
-                                                    st.error(f"❌ Cannot assign - Only {gap_after:.1f} hours between new shift and existing shift starting at {existing_row['DisplayStart']}")
-                                                    violation_found = True
-                                                    break
-                                            
-                                            if not violation_found and not hours_error:
-                                                if assign_resource_to_appointment(appt_id, selected_resource):
-                                                    st.session_state[f"assigned_{appt_id}"] = True
-                                                    st.session_state[f"selected_resource_{appt_id}"] = selected_resource
-                                                    st.success(f"✅ Successfully assigned {selected_resource} to this appointment!")
-                                                    # Force update by rerunning but keeping expander open
-                                                    st.rerun()
-                                                else:
-                                                    st.error("Failed to assign resource")
-                                            elif hours_error:
-                                                st.error("Cannot assign due to contracted hours violation")
-                else:
-                    st.markdown("""
-                    <div class="empty-state success">
-                        <div class="empty-state-icon">🎉</div>
-                        <div class="empty-state-text">
-                            All appointments at {location} have resources assigned!
-                        </div>
-                    </div>
-                    """.format(
-                        location=st.session_state.selected_location
-                    ), unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div class="empty-state">
-                <div class="empty-state-icon">⚠️</div>
-                <div class="empty-state-text">
-                    No resources found for {location}
-                </div>
-            </div>
-            """.format(
-                location=st.session_state.selected_location
-            ), unsafe_allow_html=True)
+        # Main tabs
+        tab_assigned, tab_unassigned = st.tabs(["Assigned Shifts", "Unassigned Shifts"])
+        
+        with tab_assigned:
+            display_assigned_tab(
+                st.session_state.selected_location,
+                st.session_state.selected_employment_type,
+                st.session_state.selected_resource
+            )
+        
+        with tab_unassigned:
+            display_unassigned_tab(
+                st.session_state.selected_location,
+                st.session_state.selected_employment_type
+            )
 
 if __name__ == "__main__":
     main()
