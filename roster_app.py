@@ -1685,6 +1685,177 @@ def display_enhanced_appointment_card(row, selected_location, all_resources_df, 
                         st.error(f"Error loading details: {str(e)}")
             
             st.markdown("</div>", unsafe_allow_html=True)
+
+def display_reassign_tab(selected_location, selected_employment_type):
+    """Displays the UI tab for reassigning shifts between resources"""
+    st.markdown(f"""
+    <div style="
+        background: linear-gradient(135deg, #4b6cb7, #182848);
+        color: white;
+        padding: 16px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    ">
+        <div style="
+            font-size: 1.3rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        ">
+            <span style="font-size: 1.5rem;">🔄</span>
+            Reassign Shifts at {selected_location}
+        </div>
+        <div style="
+            font-size: 1rem;
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        ">
+            <span style="
+                background: white;
+                color: #4b6cb7;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-weight: 600;
+                font-size: 0.9rem;
+            ">Select a resource to view their assigned shifts</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Get all resources for this location
+    resources = get_resources_by_location(selected_location, selected_employment_type)
+    
+    if not resources:
+        st.warning(f"No resources found at {selected_location} with employment type {selected_employment_type}")
+        return
+    
+    # Select resource to view their shifts
+    selected_resource = st.selectbox(
+        "Select Resource to View Their Shifts:",
+        resources,
+        key="reassign_resource_select"
+    )
+    
+    if not selected_resource:
+        return
+    
+    # Get all appointments for this resource
+    appointments = get_appointments_by_resource_and_location(selected_resource, selected_location)
+    
+    if appointments.empty:
+        st.info(f"No shifts currently assigned to {selected_resource}")
+        return
+    
+    st.markdown(f"""
+    <div class="card">
+        <div class="card-header">
+            <span class="icon">📅</span> {selected_resource}'s Assigned Shifts at {selected_location}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Display resource details and constraints
+    resource_details = get_resource_details(selected_resource)
+    display_resource_details(resource_details)
+    display_resource_constraints(selected_resource, selected_location)
+    
+    # Group by week
+    week_tab1, week_tab2 = st.tabs([
+        f"Week 1 ({len(appointments[appointments['Week'] == 1])} shifts)",
+        f"Week 2 ({len(appointments[appointments['Week'] == 2])} shifts)"
+    ])
+    
+    def display_week_shifts(week_num):
+        week_data = appointments[appointments['Week'] == week_num]
+        
+        if week_data.empty:
+            st.info(f"No shifts in Week {week_num}")
+            return
+        
+        # Display each shift with unassign/reassign options
+        for _, row in week_data.iterrows():
+            appt_id = row['AppointmentID']
+            
+            with st.expander(f"{row['DisplayStart']} - {row['DurationHours']:.1f}h ({row['Participant']})"):
+                col1, col2 = st.columns([0.7, 0.3])
+                
+                with col1:
+                    st.markdown(f"""
+                    <div style="margin-bottom: 10px;">
+                        <div style="font-weight: bold;">{row['Name']}</div>
+                        <div>{row['DisplayStart']} to {row['DisplayEnd']}</div>
+                        <div>Duration: {row['DurationHours']:.1f} hours</div>
+                        <div>Participant: {row['Participant']}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    # Unassign button
+                    if st.button("Unassign", key=f"unassign_{appt_id}"):
+                        if unassign_resource_from_appointment(appt_id):
+                            st.success(f"Shift unassigned from {selected_resource}")
+                            st.rerun()
+                
+                # Reassign section
+                st.markdown("---")
+                st.markdown("**Reassign to another resource:**")
+                
+                # Get available resources (excluding current one)
+                available_resources = [r for r in resources if r != selected_resource]
+                
+                if not available_resources:
+                    st.warning("No other resources available at this location")
+                    return
+                
+                new_resource = st.selectbox(
+                    "Select New Resource:",
+                    available_resources,
+                    key=f"reassign_select_{appt_id}"
+                )
+                
+                if st.button("Reassign", key=f"reassign_btn_{appt_id}"):
+                    if assign_resource_to_appointment(appt_id, new_resource):
+                        st.success(f"Shift reassigned from {selected_resource} to {new_resource}")
+                        st.rerun()
+    
+    with week_tab1:
+        display_week_shifts(1)
+    
+    with week_tab2:
+        display_week_shifts(2)
+
+def unassign_resource_from_appointment(appointment_id):
+    """Unassigns a resource from an appointment"""
+    try:
+        with db_connection() as conn:
+            cursor = conn.cursor()
+            update_query = """
+            UPDATE NewAppointments
+            SET maica__Resources__c = NULL
+            WHERE Id = ?
+            """
+            cursor.execute(update_query, (appointment_id,))
+            
+            if cursor.rowcount == 0:
+                conn.rollback()
+                st.error("Failed to unassign - appointment may not exist")
+                return False
+            else:
+                conn.commit()
+                st.cache_data.clear()  # Clear relevant caches
+                return True
+    except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
+        st.error(f"Database error during unassignment: {str(e)}")
+        return False
+        
                              
 def main():
     # Initialize session state
@@ -1788,7 +1959,9 @@ def main():
                 st.rerun()
 
         # Main tabs
-        tab_assigned, tab_unassigned = st.tabs(["Assigned Shifts", "Unassigned Shifts"])
+        tab_assigned, tab_unassigned, tab_reassign = st.tabs(
+            ["Assigned Shifts", "Unassigned Shifts", "Reassign Shifts"]
+        )
         
         with tab_assigned:
             display_assigned_tab(
@@ -1799,6 +1972,12 @@ def main():
         
         with tab_unassigned:
             display_unassigned_tab(
+                st.session_state.selected_location,
+                st.session_state.selected_employment_type
+            )
+            
+        with tab_reassign:
+            display_reassign_tab(
                 st.session_state.selected_location,
                 st.session_state.selected_employment_type
             )
