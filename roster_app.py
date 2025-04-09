@@ -28,6 +28,21 @@ DB_NAME = "RosterManagement"
 DB_USERNAME = "my_user"
 DB_PASSWORD = "!Mynameisapp"
 
+# Database connection manager
+@contextmanager
+def db_connection():
+    conn = pyodbc.connect(
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"SERVER={DB_SERVER},{DB_PORT};"  # Use ngrok's TCP tunnel address and port
+        f"DATABASE={DB_NAME};"
+        f"UID={DB_USERNAME};"
+        f"PWD={DB_PASSWORD};"
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()
+
 # Special locations mapping
 SPECIAL_LOCATIONS = {
     "thomas street": "Thomas Street, Wollongong",
@@ -49,20 +64,6 @@ SPECIAL_LOCATIONS = {
     "castlereagh st": "Castlereagh St"
 }
 
-# Database connection manager
-@contextmanager
-def db_connection():
-    conn = pyodbc.connect(
-        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-        f"SERVER={DB_SERVER},{DB_PORT};"  # Use ngrok's TCP tunnel address and port
-        f"DATABASE={DB_NAME};"
-        f"UID={DB_USERNAME};"
-        f"PWD={DB_PASSWORD};"
-    )
-    try:
-        yield conn
-    finally:
-        conn.close()
 
 # Test connection
 # try:
@@ -1314,7 +1315,7 @@ def display_assigned_tab(selected_location, selected_employment_type, selected_r
 
                 
 def display_unassigned_tab(selected_location, selected_employment_type):
-    """Displays the UI tab for handling unassigned appointments with enhanced day tabs and cards"""
+    """Displays the UI tab for handling unassigned appointments with enhanced header"""
     try:
         unassigned_appointments = get_unassigned_appointments(selected_location)
         all_resources_df = get_all_resources(selected_employment_type)
@@ -1334,101 +1335,42 @@ def display_unassigned_tab(selected_location, selected_employment_type):
         """, unsafe_allow_html=True)
         return
 
-    # Custom CSS for enhanced UI
-    st.markdown("""
-    <style>
-        .day-tab {
-            padding: 8px 15px;
-            border-radius: 20px;
-            margin: 0 3px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.3s;
-            border: 1px solid #e0e0e0;
-            background-color: #f5f5f5;
-        }
-        .day-tab:hover {
-            background-color: #e0e0e0;
-        }
-        .day-tab.active {
-            background-color: #1976d2;
-            color: white;
-            border-color: #1976d2;
-        }
-        .appointment-card-enhanced {
-            border-left: 4px solid #ff4b4b;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 20px;
-            background-color: white;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            transition: transform 0.2s;
-        }
-        .appointment-card-enhanced:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
-        }
-        .appointment-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        .appointment-time {
-            color: #666;
-            font-size: 0.9em;
-            margin: 5px 0;
-        }
-        .badge-enhanced {
-            display: inline-block;
-            padding: 3px 10px;
-            border-radius: 12px;
-            font-size: 0.75em;
-            font-weight: 600;
-            margin-right: 8px;
-        }
-        .badge-day {
-            background-color: #e3f2fd;
-            color: #1976d2;
-        }
-        .badge-participant {
-            background-color: #e8f5e9;
-            color: #388e3c;
-        }
-        .badge-duration {
-            background-color: #fff3e0;
-            color: #e65100;
-        }
-        .day-count {
-            font-size: 0.8em;
-            color: #666;
-            margin-left: 8px;
-        }
-        .error-message {
-            background-color: #ffebee;
-            padding: 12px;
-            border-radius: 8px;
-            border-left: 4px solid #f44336;
-            margin: 10px 0;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # Header with count
+    # Enhanced header with professional styling
     unassigned_count = len(unassigned_appointments)
     st.markdown(f"""
     <div style="
-        background: linear-gradient(135deg, #ff4b4b, #ff7676);
+        background: linear-gradient(135deg, #ff6b6b, #ff8e8e);
         color: white;
-        padding: 15px;
+        padding: 16px;
         border-radius: 10px;
         margin-bottom: 20px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     ">
-        <div style="font-size: 1.3rem; font-weight: 600;">
-            🚨 Unassigned Appointments at {selected_location}
+        <div style="
+            font-size: 1.3rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        ">
+            <span style="font-size: 1.5rem;">📅</span>
+            Unassigned Appointments at {selected_location}
         </div>
-        <div style="font-size: 1rem; margin-top: 5px;">
-            {unassigned_count} appointment{'s' if unassigned_count != 1 else ''} need assignment
+        <div style="
+            font-size: 1rem;
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        ">
+            <span style="
+                background: white;
+                color: #ff6b6b;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-weight: 600;
+                font-size: 0.9rem;
+            ">{unassigned_count} appointment{'s' if unassigned_count != 1 else ''} need assignment</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1455,8 +1397,8 @@ def display_unassigned_tab(selected_location, selected_employment_type):
 
     # Week tabs
     week_tab1, week_tab2 = st.tabs([
-        f"📅 Week 1 ({unassigned_appointments[unassigned_appointments['Week'] == 1]['DayOfWeek'].nunique()} days)", 
-        f"📅 Week 2 ({unassigned_appointments[unassigned_appointments['Week'] == 2]['DayOfWeek'].nunique()} days)"
+        f"Week 1 ({unassigned_appointments[unassigned_appointments['Week'] == 1]['DayOfWeek'].nunique()} days)", 
+        f"Week 2 ({unassigned_appointments[unassigned_appointments['Week'] == 2]['DayOfWeek'].nunique()} days)"
     ])
 
     with week_tab1:
@@ -1494,6 +1436,7 @@ def display_unassigned_tab(selected_location, selected_employment_type):
                 <div style="font-weight: 600;">No unassigned appointments in Week 2</div>
             </div>
             """, unsafe_allow_html=True)
+
 
 def display_week_with_enhanced_tabs(week_data, selected_location, all_resources_df, local_resources, week_num):
     """Displays the week with enhanced day tabs and appointment cards"""
@@ -1570,177 +1513,179 @@ def display_week_with_enhanced_tabs(week_data, selected_location, all_resources_
         </div>
         """, unsafe_allow_html=True)
 
-
 def display_enhanced_appointment_card(row, selected_location, all_resources_df, local_resources, week_num):
-    """Displays a single appointment card with enhanced UI"""
+    """Displays a clean appointment card with simple collapse/expand icon"""
     appt_id = row['AppointmentID']
     start_datetime = pd.to_datetime(row['StartDateTime'])
     end_datetime = pd.to_datetime(row['EndDateTime'])
     
-    with st.container():
+    # Track card expansion state
+    expand_key = f"expand_{appt_id}_w{week_num}"
+    if expand_key not in st.session_state:
+        st.session_state[expand_key] = False
+    
+    # Card header with collapse icon
+    col1, col2 = st.columns([0.9, 0.1])
+    with col1:
         st.markdown(f"""
-        <div class="appointment-card-enhanced">
-            <div class="appointment-header">
-                <div style="font-weight: 600; font-size: 1.1rem; color: #333;">{row.get('Name', 'Unnamed Appointment')}</div>
-                <div style="font-size: 0.9rem; color: #666;">{row['DurationHours']:.1f}h</div>
+        <div style="
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
+            background: white;
+        ">
+            <div style="font-weight: 600; font-size: 1rem; color: #333;">
+                {row.get('Name', 'Unnamed Appointment')}
             </div>
-            <div class="appointment-time">
+            <div style="display: flex; gap: 8px; margin-top: 4px;">
+                <span style="
+                    background: #fff3e0;
+                    color: #e65100;
+                    padding: 2px 8px;
+                    border-radius: 12px;
+                    font-size: 0.8rem;
+                ">{row['DurationHours']:.1f}h</span>
+                <span style="
+                    background: #e8f5e9;
+                    color: #388e3c;
+                    padding: 2px 8px;
+                    border-radius: 12px;
+                    font-size: 0.8rem;
+                ">{row.get('Participant', 'No participant')}</span>
+            </div>
+            <div style="font-size: 0.85rem; color: #666; margin-top: 4px;">
                 {start_datetime.strftime('%a, %b %d • %I:%M %p')} - {end_datetime.strftime('%I:%M %p')}
             </div>
-            <div style="margin-top: 8px;">
-                <span class="badge-enhanced badge-participant">{row.get('Participant', 'No participant')}</span>
-                <span class="badge-enhanced badge-day">{row['DayOfWeek']}</span>
-            </div>
         """, unsafe_allow_html=True)
-        
-        # Assignment section (original functionality)
-        assigned_state_key = f"assigned_{appt_id}"
-        resource_state_key = f"selected_resource_{appt_id}_w{week_num}"
-        
-        if assigned_state_key not in st.session_state:
-            st.session_state[assigned_state_key] = False
-        if resource_state_key not in st.session_state:
-            st.session_state[resource_state_key] = None
-        
-        # Check if already assigned in DB
-        assigned_to_db = None
-        try:
-            with db_connection() as conn:
-                check_query = "SELECT maica__Resources__c FROM NewAppointments WHERE Id = ?"
-                result = pd.read_sql(check_query, conn, params=[appt_id])
-                if not result.empty:
-                    res_val = result.iloc[0,0]
-                    if res_val and str(res_val).strip().upper() != 'NULL':
-                        assigned_to_db = res_val
-        except Exception as e:
-            st.markdown(f"""
-            <div class="error-message">
-                <div style="font-weight: 600; color: #d32f2f;">⚠️ Database Error</div>
-                <div style="color: #555;">Could not check assignment status: {str(e)}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        if assigned_to_db and not st.session_state[assigned_state_key]:
-            st.session_state[assigned_state_key] = True
-            st.session_state[resource_state_key] = assigned_to_db
-        
-        if st.session_state[assigned_state_key]:
+    
+    with col2:
+        # Collapse/expand icon button
+        if st.button("▼" if st.session_state[expand_key] else "▶", 
+                    key=f"expand-btn-{appt_id}",
+                    help="Expand/collapse details"):
+            st.session_state[expand_key] = not st.session_state[expand_key]
+            st.rerun()
+    
+    # Expanded content (only shown if expanded)
+    if st.session_state[expand_key]:
+        with st.container():
             st.markdown(f"""
             <div style="
-                background-color: #e8f5e9;
+                border: 1px solid #e0e0e0;
+                border-top: none;
+                border-radius: 0 0 8px 8px;
                 padding: 12px;
-                border-radius: 8px;
-                margin-top: 15px;
-                border-left: 4px solid #388e3c;
+                margin-top: -8px;
+                margin-bottom: 12px;
+                background: white;
             ">
-                <div style="font-weight: 600; color: #388e3c;">✅ Already Assigned</div>
-                <div style="margin-top: 5px;">Assigned to: {st.session_state[resource_state_key]}</div>
-            </div>
             """, unsafe_allow_html=True)
-        else:
-            st.markdown('<div style="margin-top: 15px;">', unsafe_allow_html=True)
             
-            # Resource selection
-            col1, col2 = st.columns(2)
+            assigned_state_key = f"assigned_{appt_id}"
+            resource_state_key = f"selected_resource_{appt_id}_w{week_num}"
             
-            with col1:
-                local_options = ["Select local resource..."] + local_resources
-                local_index = 0
-                if st.session_state.get(resource_state_key) in local_resources:
-                    try: local_index = local_options.index(st.session_state[resource_state_key])
-                    except: local_index = 0
+            # Check if already assigned
+            assigned_to_db = None
+            try:
+                with db_connection() as conn:
+                    check_query = "SELECT maica__Resources__c FROM NewAppointments WHERE Id = ?"
+                    result = pd.read_sql(check_query, conn, params=[appt_id])
+                    if not result.empty:
+                        res_val = result.iloc[0,0]
+                        if res_val and str(res_val).strip().upper() != 'NULL':
+                            assigned_to_db = res_val
+            except Exception as e:
+                st.error(f"Database error: {str(e)}")
+            
+            if assigned_to_db:
+                st.markdown(f"""
+                <div style="
+                    background-color: #e8f5e9;
+                    padding: 12px;
+                    border-radius: 8px;
+                    margin-bottom: 12px;
+                    border-left: 4px solid #388e3c;
+                ">
+                    <div style="font-weight: 600; color: #388e3c;">✅ Already Assigned</div>
+                    <div style="margin-top: 5px;">Assigned to: {assigned_to_db}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                # Resource selection
+                st.markdown('<div style="margin-bottom: 8px;">', unsafe_allow_html=True)
                 
+                # Local resources dropdown
                 local_selected = st.selectbox(
                     "Local Resources:",
-                    local_options,
+                    ["Select local resource..."] + local_resources,
                     key=f"local_select_{appt_id}_w{week_num}",
                     format_func=lambda x: x if x == "Select local resource..." else (
                         f"{x} ({get_resource_details(x)['employmentType']})"
                     )
                 )
-            
-            with col2:
-                all_options = ["Select from all resources..."] + all_resources_df['resource_name'].unique().tolist()
-                all_index = 0
-                if st.session_state.get(resource_state_key) in all_resources_df['resource_name'].values:
-                    try: all_index = all_options.index(st.session_state[resource_state_key])
-                    except: all_index = 0
                 
+                # All resources dropdown
                 all_selected = st.selectbox(
                     "All Resources:",
-                    all_options,
+                    ["Select from all resources..."] + all_resources_df['resource_name'].unique().tolist(),
                     key=f"all_select_{appt_id}_w{week_num}",
                     format_func=lambda x: x if x == "Select from all resources..." else (
                         f"{x} ({all_resources_df[all_resources_df['resource_name'] == x]['primaryLocation'].values[0]}, "
                         f"{all_resources_df[all_resources_df['resource_name'] == x]['employmentType'].values[0]})"
                     )
                 )
-            
-            # Process selection
-            determined_selection = None
-            if all_selected and all_selected != "Select from all resources...":
-                determined_selection = all_selected.split(' (')[0]
-            elif local_selected and local_selected != "Select local resource...":
-                determined_selection = local_selected.split(' (')[0]
-            
-            st.session_state[resource_state_key] = determined_selection
-            
-            # Show resource details and assign button
-            if determined_selection:
-                try:
-                    resource_details = get_resource_details(determined_selection)
-                    if resource_details:
-                        st.markdown("""
-                        <div style="
-                            margin-top: 15px;
-                            padding: 15px;
-                            background-color: #f5f5f5;
-                            border-radius: 8px;
-                        ">
-                        """, unsafe_allow_html=True)
-                        
-                        display_resource_details(resource_details)
-                        
-                        constraints = calculate_constraints(determined_selection, selected_location)
-                        if constraints:
-                            st.markdown("**Current Constraints:**")
-                            display_constraints(constraints)
-                        
-                        if st.button(f"Assign {determined_selection.split()[0]}", 
-                                    key=f"assign_btn_{appt_id}_w{week_num}"):
-                            is_valid, message = validate_assignment(
-                                determined_selection,
-                                selected_location,
-                                start_datetime,
-                                end_datetime,
-                                week_num=week_num
-                            )
-                            if is_valid:
-                                if assign_resource_to_appointment(appt_id, determined_selection):
-                                    st.success(f"✅ Successfully assigned {determined_selection}!")
-                                    st.session_state[assigned_state_key] = True
-                                    st.rerun()
-                            else:
-                                st.markdown(f"""
-                                <div class="error-message">
-                                    <div style="font-weight: 600; color: #d32f2f;">⚠️ Assignment Error</div>
-                                    <div style="color: #555;">{message}</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                        
-                        st.markdown("</div>", unsafe_allow_html=True)
-                except Exception as e:
-                    st.markdown(f"""
-                    <div class="error-message">
-                        <div style="font-weight: 600; color: #d32f2f;">⚠️ Error Loading Details</div>
-                        <div style="color: #555;">{str(e)}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                
+                # Process selection
+                determined_selection = None
+                if all_selected and all_selected != "Select from all resources...":
+                    determined_selection = all_selected.split(' (')[0]
+                elif local_selected and local_selected != "Select local resource...":
+                    determined_selection = local_selected.split(' (')[0]
+                
+                if determined_selection:
+                    try:
+                        resource_details = get_resource_details(determined_selection)
+                        if resource_details:
+                            st.markdown("""
+                            <div style="
+                                margin-top: 12px;
+                                padding: 12px;
+                                background-color: #f5f5f5;
+                                border-radius: 8px;
+                            ">
+                            """, unsafe_allow_html=True)
+                            
+                            display_resource_details(resource_details)
+                            
+                            constraints = calculate_constraints(determined_selection, selected_location)
+                            if constraints:
+                                st.markdown("**Current Constraints:**")
+                                display_constraints(constraints)
+                            
+                            if st.button(f"Assign {determined_selection.split()[0]}", 
+                                        key=f"assign_btn_{appt_id}_w{week_num}",
+                                        type="primary"):
+                                is_valid, message = validate_assignment(
+                                    determined_selection,
+                                    selected_location,
+                                    start_datetime,
+                                    end_datetime,
+                                    week_num=week_num
+                                )
+                                if is_valid:
+                                    if assign_resource_to_appointment(appt_id, determined_selection):
+                                        st.success(f"✅ Successfully assigned {determined_selection}!")
+                                        st.rerun()
+                                else:
+                                    st.error(message)
+                            
+                            st.markdown("</div>", unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"Error loading details: {str(e)}")
             
             st.markdown("</div>", unsafe_allow_html=True)
-        
-        st.markdown("</div>", unsafe_allow_html=True)  # Close appointment card
-                  
+                             
 def main():
     # Initialize session state
     if 'selected_location' not in st.session_state:
