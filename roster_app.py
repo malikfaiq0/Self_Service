@@ -37,6 +37,8 @@ def db_connection():
         f"DATABASE={DB_NAME};"
         f"UID={DB_USERNAME};"
         f"PWD={DB_PASSWORD};"
+        "Encrypt=no;"
+        "TrustServerCertificate=yes;"
     )
     try:
         yield conn
