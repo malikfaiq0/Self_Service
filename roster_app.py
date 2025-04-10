@@ -21,8 +21,8 @@ def load_css():
 load_css()
 
 # Database configuration
-DB_SERVER = "0.tcp.ap.ngrok.io"
-DB_PORT = "19580"  # <- updated to the new port from ngrok
+DB_SERVER = "0.tcp.in.ngrok.io"
+DB_PORT = "15935"  # Updated to match current ngrok forwarding port
 
 DB_NAME = "RosterManagement"
 DB_USERNAME = "my_user"
@@ -37,13 +37,12 @@ def db_connection():
         f"DATABASE={DB_NAME};"
         f"UID={DB_USERNAME};"
         f"PWD={DB_PASSWORD};"
-        "Encrypt=no;"  # optional for ngrok (unless you need it)
-        "TrustServerCertificate=yes;"
     )
     try:
         yield conn
     finally:
         conn.close()
+
 
 # Special locations mapping
 SPECIAL_LOCATIONS = {
