@@ -46,7 +46,6 @@ def db_connection():
     finally:
         conn.close()
 
-
 # Special locations mapping
 SPECIAL_LOCATIONS = {
     "thomas street": "Thomas Street, Wollongong",
@@ -892,15 +891,24 @@ def display_constraints(constraints):
     
     week1_class = "metric-card"
     if constraints['week1_violation']:
-        week1_class = "metric-card alert-danger"
+        if constraints['employmentType'] == 'Part Time' and constraints['week1_hours'] <= 38:
+            week1_class = "metric-card alert-warning"
+        else:
+            week1_class = "metric-card alert-danger"
     
     week2_class = "metric-card"
     if constraints['week2_violation']:
-        week2_class = "metric-card alert-danger"
+        if constraints['employmentType'] == 'Part Time' and constraints['week2_hours'] <= 38:
+            week2_class = "metric-card alert-warning"
+        else:
+            week2_class = "metric-card alert-danger"
     
     total_class = "metric-card"
     if constraints['total_violation']:
-        total_class = "metric-card alert-danger"
+        if constraints['employmentType'] == 'Part Time' and constraints['total_hours'] <= (constraints['contractedHours'] * 2):
+            total_class = "metric-card alert-warning"
+        else:
+            total_class = "metric-card alert-danger"
     
     st.markdown("""
     <div class="metric-container">
@@ -947,18 +955,24 @@ def display_constraints(constraints):
         constraint_errors.append(f"❌ Only {constraints['min_hours_between_shifts']} hours between shifts on the same day (min 10 required)")
     
     if constraints['employmentType'] == 'Full Time':
-        if constraints['week1_violation']:
+        if constraints['week1_hours'] > 38:
             constraint_errors.append(f"❌ Week 1 hours exceed 38 (currently {constraints['week1_hours']:.1f}h)")
-        if constraints['week2_violation']:
+        if constraints['week2_hours'] > 38:
             constraint_errors.append(f"❌ Week 2 hours exceed 38 (currently {constraints['week2_hours']:.1f}h)")
-        if constraints['total_violation']:
+        if constraints['total_hours'] > 76:
             constraint_errors.append(f"❌ Total hours exceed 76 (currently {constraints['total_hours']:.1f}h)")
     elif constraints['employmentType'] == 'Part Time':
-        if constraints['week1_violation']:
-            constraint_errors.append(f"❌ Week 1 hours exceed contracted {constraints['contractedHours']}h (currently {constraints['week1_hours']:.1f}h)")
-        if constraints['week2_violation']:
-            constraint_errors.append(f"❌ Week 2 hours exceed contracted {constraints['contractedHours']}h (currently {constraints['week2_hours']:.1f}h)")
-        if constraints['total_violation']:
+        if constraints['week1_hours'] > constraints['contractedHours']:
+            if constraints['week1_hours'] <= 38:
+                constraint_errors.append(f"⚠️ Week 1 hours exceed contracted {constraints['contractedHours']}h (currently {constraints['week1_hours']:.1f}h)")
+            else:
+                constraint_errors.append(f"❌ Week 1 hours exceed maximum 38h (currently {constraints['week1_hours']:.1f}h)")
+        if constraints['week2_hours'] > constraints['contractedHours']:
+            if constraints['week2_hours'] <= 38:
+                constraint_errors.append(f"⚠️ Week 2 hours exceed contracted {constraints['contractedHours']}h (currently {constraints['week2_hours']:.1f}h)")
+            else:
+                constraint_errors.append(f"❌ Week 2 hours exceed maximum 38h (currently {constraints['week2_hours']:.1f}h)")
+        if constraints['total_hours'] > (constraints['contractedHours'] * 2):
             constraint_errors.append(f"❌ Total hours exceed contracted {constraints['contractedHours']*2}h (currently {constraints['total_hours']:.1f}h)")
     
     if constraint_errors:
@@ -970,7 +984,7 @@ def display_constraints(constraints):
         for error in constraint_errors:
             st.markdown(f'<li>{error}</li>', unsafe_allow_html=True)
         st.markdown("</ul></div>", unsafe_allow_html=True)
-        
+       
 def display_resource_details(resource_details):
     st.markdown("""
     <div class="card">
@@ -1180,143 +1194,355 @@ def display_resource_constraints(resource_name, location):
         st.markdown("</ul></div>", unsafe_allow_html=True)
 
 def display_assigned_tab(selected_location, selected_employment_type, selected_resource):
-    resources = get_resources_by_location(
-        selected_location,
-        selected_employment_type
-    )
+    resources = get_resources_by_location(selected_location, selected_employment_type)
 
-    if resources:
-        new_resource = st.selectbox(
-            "Select Resource:",
-            resources,
-            key="assigned_resource_selectbox"
-        )
+    if not resources:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">⚠️</div>
+            <div class="empty-state-text">No resources found for this location and employment type.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
 
-        if new_resource != selected_resource:
-            st.session_state.selected_resource = new_resource
-            st.rerun()
+    st.markdown(f"""
+    <div class="card">
+        <div class="card-header">
+            <span class="icon">📅</span> Weekly Schedule for All Resources at {selected_location}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-        if selected_resource:
-            appointments = get_appointments_by_resource_and_location(
-                selected_resource,
-                selected_location
+    # Get appointments for all resources
+    all_appointments = []
+    for resource in resources:
+        resource_appointments = get_appointments_by_resource_and_location(resource, selected_location)
+        if not resource_appointments.empty:
+            if not pd.api.types.is_datetime64_any_dtype(resource_appointments['StartDateTime']):
+                resource_appointments['StartDateTime'] = pd.to_datetime(resource_appointments['StartDateTime'])
+            if not pd.api.types.is_datetime64_any_dtype(resource_appointments['EndDateTime']):
+                resource_appointments['EndDateTime'] = pd.to_datetime(resource_appointments['EndDateTime'])
+            resource_appointments['Resource'] = resource
+            resource_appointments['DayOfWeek'] = resource_appointments['StartDateTime'].dt.day_name()
+            all_appointments.append(resource_appointments)
+
+    if not all_appointments:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">📅</div>
+            <div class="empty-state-text">No appointments available.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    appointments_df = pd.concat(all_appointments)
+    appointments_df['Week'] = appointments_df['Week'].fillna(1)  # fallback if Week not defined
+
+    week1_df = appointments_df[appointments_df['Week'] == 1]
+    week2_df = appointments_df[appointments_df['Week'] == 2]
+
+    def render_week_calendar(week_df, week_label):
+        all_days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+        if week_df.empty:
+            st.markdown(f"""
+            <div class="empty-state">
+                <div class="empty-state-icon">📅</div>
+                <div class="empty-state-text">No appointments found for {week_label}.</div>
+            </div>
+            """, unsafe_allow_html=True)
+            return
+
+        week_df['Date'] = week_df['StartDateTime'].dt.date
+        week_df['DayDate'] = week_df['StartDateTime'].dt.strftime('%a (%b %d)')
+
+        # Build appointment map: {DayOfWeek -> [shift_info]}
+        appointments_by_day = {day: [] for day in all_days}
+        for _, row in week_df.iterrows():
+            day = row['DayOfWeek']
+            resource = row['Resource']
+            start_time = row['StartDateTime'].strftime('%I:%M %p')
+            end_time = row['EndDateTime'].strftime('%I:%M %p')
+            duration = f"{row['DurationHours']:.1f}h"
+            display = (
+                f"<div class='weekly-appointment'><b>{resource}</b><br>"
+                f"<span class='time-range'>{start_time} - {end_time}</span><br>"
+                f"<span class='duration'>({duration})</span></div>"
             )
+            appointments_by_day[day].append(display)
 
-            if not appointments.empty:
-                if not pd.api.types.is_datetime64_any_dtype(appointments['StartDateTime']):
-                    appointments['StartDateTime'] = pd.to_datetime(appointments['StartDateTime'])
-                if not pd.api.types.is_datetime64_any_dtype(appointments['EndDateTime']):
-                    appointments['EndDateTime'] = pd.to_datetime(appointments['EndDateTime'])
+        # Get date for each day
+        day_date_map = {
+            day: week_df[week_df['DayOfWeek'] == day]['StartDateTime'].dt.strftime('%a (%b %d)').iloc[0]
+            if not week_df[week_df['DayOfWeek'] == day].empty else f"{day}"
+            for day in all_days
+        }
 
+        # Display column headers
+        cols = st.columns(7)
+        for i, day in enumerate(all_days):
+            with cols[i]:
                 st.markdown(f"""
-                <div class="card">
-                    <div class="card-header">
-                        <span class="icon">📅</span> {selected_resource}'s Schedule at {selected_location}
-                    </div>
+                <div class="weekly-header" style="text-align:center; font-weight:bold;">
+                    {day_date_map[day]}
                 </div>
+                <div class="weekly-day-column">
                 """, unsafe_allow_html=True)
 
-                resource_details = get_resource_details(selected_resource)
-                display_resource_details(resource_details)
-                display_resource_constraints(selected_resource, selected_location)
-
-                all_days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-
-                appointments['Date'] = appointments['StartDateTime'].dt.date
-                appointments['DayOfWeek'] = appointments['StartDateTime'].dt.day_name()
-
-                week1_appointments = appointments[appointments['Week'] == 1]
-                week2_appointments = appointments[appointments['Week'] == 2]
-
-                week1_dates = week1_appointments['StartDateTime'].dt.date.unique()
-                week2_dates = week2_appointments['StartDateTime'].dt.date.unique()
-
-                week_tab1, week_tab2 = st.tabs([
-                    f"📅 Week 1 ({min(week1_dates).strftime('%b %d')} - {max(week1_dates).strftime('%b %d')})" if len(week1_dates) > 0 else "📅 Week 1",
-                    f"📅 Week 2 ({min(week2_dates).strftime('%b %d')} - {max(week2_dates).strftime('%b %d')})" if len(week2_dates) > 0 else "📅 Week 2"
-                ])
-
-                def render_week(week_appointments, label):
-                    if not week_appointments.empty:
-                        unique_days = [
-                            f"{day} ({week_appointments[week_appointments['DayOfWeek'] == day]['StartDateTime'].dt.strftime('%b %d').iloc[0]})"
-                            if not week_appointments[week_appointments['DayOfWeek'] == day].empty else f"{day}"
-                            for day in all_days
-                        ]
-
-                        st.subheader(f"{label} - {selected_resource}")
-                        cols = st.columns(7)
-
-                        for i, day in enumerate(unique_days):
-                            with cols[i]:
-                                st.markdown(f"""
-                                <div class="weekly-header" style="text-align:center; font-weight:bold;">
-                                    {day.split()[0][:3]}<br>{day.split('(')[1][:-1] if '(' in day else ''}
-                                </div>
-                                <div class="weekly-day-column">
-                                """, unsafe_allow_html=True)
-
-                        appointments_by_day = {day: [] for day in all_days}
-                        for _, row in week_appointments.iterrows():
-                            day = row['DayOfWeek']
-                            start_time = row['StartDateTime'].strftime('%I:%M %p')
-                            end_time = row['EndDateTime'].strftime('%I:%M %p')
-                            duration = f"{row['DurationHours']:.1f}h"
-                            appointments_by_day[day].append(
-                                f"<span class='time-range'>{start_time} - {end_time}</span><br>"
-                                f"<span class='duration'>({duration})</span>"
-                            )
-
-                        max_appointments = max(len(appts) for appts in appointments_by_day.values())
-                        for i in range(max_appointments):
-                            cols = st.columns(7)
-                            for j, day in enumerate(all_days):
-                                with cols[j]:
-                                    if i < len(appointments_by_day[day]):
-                                        st.markdown(f"""
-                                        <div class="weekly-appointment">
-                                            {appointments_by_day[day][i]}
-                                        </div>
-                                        """, unsafe_allow_html=True)
-
-                        cols = st.columns(7)
-                        for col in cols:
-                            with col:
-                                st.markdown("</div>", unsafe_allow_html=True)
-
-                        total_hours = week_appointments['DurationHours'].sum()
-                        st.markdown(f"""
-                        <div class="total-hours">
-                            Total Hours: {total_hours:.2f} hours
-                        </div>
-                        """, unsafe_allow_html=True)
+        # Display appointment rows
+        max_appointments = max(len(appts) for appts in appointments_by_day.values())
+        for i in range(max_appointments):
+            cols = st.columns(7)
+            for j, day in enumerate(all_days):
+                with cols[j]:
+                    if i < len(appointments_by_day[day]):
+                        st.markdown(appointments_by_day[day][i], unsafe_allow_html=True)
                     else:
-                        st.markdown("""
-                        <div class="empty-state">
-                            <div class="empty-state-icon">📅</div>
-                            <div class="empty-state-text">No appointments</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.markdown("<div class='weekly-appointment'>&nbsp;</div>", unsafe_allow_html=True)
 
-                with week_tab1:
-                    render_week(week1_appointments, "Week 1 Schedule")
+        # Close all day columns
+        cols = st.columns(7)
+        for col in cols:
+            with col:
+                st.markdown("</div>", unsafe_allow_html=True)
 
-                with week_tab2:
-                    render_week(week2_appointments, "Week 2 Schedule")
+    # Week tab labels with date range
+    def get_date_range_label(week_df, default_label):
+        if week_df.empty:
+            return default_label
+        dates = week_df['StartDateTime'].dt.date.unique()
+        start = min(dates).strftime('%b %d')
+        end = max(dates).strftime('%b %d')
+        return f"{default_label} ({start} - {end})"
 
+    week_tab1_label = get_date_range_label(week1_df, "📅 Week 1")
+    week_tab2_label = get_date_range_label(week2_df, "📅 Week 2")
+
+    week_tab1, week_tab2 = st.tabs([week_tab1_label, week_tab2_label])
+
+    with week_tab1:
+        render_week_calendar(week1_df, "Week 1")
+
+    with week_tab2:
+        render_week_calendar(week2_df, "Week 2")
+
+
+@st.cache_data(ttl=300)
+def get_all_assigned_appointments(location):
+    """Get all assigned appointments for a location"""
+    norm_location = normalize_location(location)
+    
+    # First get the week ranges for this location
+    week_ranges = get_week_ranges(location)
+    
+    with db_connection() as conn:
+        query = """
+        SELECT 
+            Id AS AppointmentID,
+            Name,
+            CONVERT(VARCHAR, maica__Scheduled_Start__c, 120) AS StartDateTime,
+            CONVERT(VARCHAR, maica__Scheduled_End__c, 120) AS EndDateTime,
+            maica__Scheduled_Duration_Minutes__c AS DurationMinutes,
+            maica__Participants__c AS Participant,
+            maica__Resources__c AS Resource
+        FROM NewAppointments
+        WHERE maica__Resources__c IS NOT NULL 
+        AND maica__Resources__c != 'NULL'
+        AND maica__Participant_Location__c LIKE '%' + ? + '%'
+        AND maica__Participants__c LIKE '%Roster%'
+        ORDER BY maica__Scheduled_Start__c
+        """
+        params = [norm_location]
+        
+        df = pd.read_sql(query, conn, params=params)
+    
+    if not df.empty:
+        df['DurationHours'] = df['DurationMinutes'] / 60
+        df['StartDate'] = pd.to_datetime(df['StartDateTime']).dt.date
+        df['DisplayStart'] = pd.to_datetime(df['StartDateTime']).dt.strftime('%a, %m/%d/%Y %I:%M %p')
+        df['DisplayEnd'] = pd.to_datetime(df['EndDateTime']).dt.strftime('%a, %m/%d/%Y %I:%M %p')
+        df['DayOfWeek'] = pd.to_datetime(df['StartDateTime']).dt.day_name()
+        
+        # Calculate week number based on the location's week ranges
+        def calculate_week(start_date):
+            if week_ranges['week1_start'] <= start_date <= week_ranges['week1_end']:
+                return 1
+            elif week_ranges['week2_start'] <= start_date <= week_ranges['week2_end']:
+                return 2
             else:
-                st.markdown("""
-                    <div class="empty-state">
-                        <div class="empty-state-icon">⚠️</div>
-                        <div class="empty-state-text">
-                            No appointments found for {resource} at {location}
-                        </div>
-                    </div>
-                    """.format(
-                    resource=selected_resource,
-                    location=selected_location
-                ), unsafe_allow_html=True)
+                return 1  # Default to week 1 if outside these ranges
+        
+        df['Week'] = df['StartDate'].apply(calculate_week)
+    return df
 
+def display_assigned_week(week_data, location, week_num):
+    """Display assigned appointments for a week"""
+    days_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    available_days = week_data['DayOfWeek'].unique()
+    
+    # Create day tabs
+    cols = st.columns(len(days_order))
+    selected_day = st.session_state.get(f'assigned_selected_day_week{week_num}', available_days[0] if len(available_days) > 0 else 'Monday')
+    
+    for i, day in enumerate(days_order):
+        with cols[i]:
+            day_count = len(week_data[week_data['DayOfWeek'] == day])
+            if day in available_days:
+                if st.button(
+                    f"{day[:3]} {f'({day_count})' if day_count > 0 else ''}",
+                    key=f"assigned_day_{day}_week{week_num}",
+                    on_click=lambda d=day: st.session_state.update({f'assigned_selected_day_week{week_num}': d})
+                ):
+                    selected_day = day
+            else:
+                st.markdown(f"""
+                <div style="
+                    padding: 8px 15px;
+                    border-radius: 20px;
+                    margin: 0 3px;
+                    font-weight: 500;
+                    color: #9e9e9e;
+                    border: 1px solid #e0e0e0;
+                    background-color: #fafafa;
+                    text-align: center;
+                ">
+                    {day[:3]}
+                </div>
+                """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Show highlighted day heading
+    day_appointments = week_data[week_data['DayOfWeek'] == selected_day]
+
+    st.markdown(f"""
+    <div style="
+        background-color: #2e7d32;
+        color: white;
+        padding: 10px 20px;
+        border-radius: 25px;
+        display: inline-block;
+        font-weight: bold;
+        font-size: 1.2rem;
+        margin-top: 20px;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    ">
+        {selected_day} — {len(day_appointments)} appointment{'s' if len(day_appointments) != 1 else ''}
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Display appointments or fallback message
+    if not day_appointments.empty:
+        for _, row in day_appointments.iterrows():
+            display_assigned_appointment_card(row, location, week_num)
+    else:
+        st.markdown(f"""
+        <div style="
+            text-align: center; 
+            padding: 30px; 
+            background-color: #f5f5f5; 
+            border-radius: 10px;
+            margin: 20px 0;
+        ">
+            <div style="font-size: 1.5rem;">📅</div>
+            <div style="font-weight: 600;">No assigned appointments on {selected_day}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+def display_assigned_appointment_card(row, location, week_num):
+    """Display an assigned appointment card with resource details"""
+    appt_id = row['AppointmentID']
+    start_datetime = pd.to_datetime(row['StartDateTime'])
+    end_datetime = pd.to_datetime(row['EndDateTime'])
+    resource_name = row['Resource']
+    
+    # Track card expansion state
+    expand_key = f"assigned_expand_{appt_id}_w{week_num}"
+    if expand_key not in st.session_state:
+        st.session_state[expand_key] = False
+    
+    # Card header with collapse icon
+    col1, col2 = st.columns([0.9, 0.1])
+    with col1:
+        st.markdown(f"""
+        <div style="
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
+            background: white;
+        ">
+            <div style="font-weight: 600; font-size: 1rem; color: #333;">
+                {row.get('Name', 'Unnamed Appointment')}
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 4px;">
+                <span style="
+                    background: #fff3e0;
+                    color: #e65100;
+                    padding: 2px 8px;
+                    border-radius: 12px;
+                    font-size: 0.8rem;
+                ">{row['DurationHours']:.1f}h</span>
+                <span style="
+                    background: #e8f5e9;
+                    color: #388e3c;
+                    padding: 2px 8px;
+                    border-radius: 12px;
+                    font-size: 0.8rem;
+                ">{row.get('Participant', 'No participant')}</span>
+                <span style="
+                    background: #e3f2fd;
+                    color: #1565c0;
+                    padding: 2px 8px;
+                    border-radius: 12px;
+                    font-size: 0.8rem;
+                ">{resource_name}</span>
+            </div>
+            <div style="font-size: 0.85rem; color: #666; margin-top: 4px;">
+                {start_datetime.strftime('%a, %b %d • %I:%M %p')} - {end_datetime.strftime('%I:%M %p')}
+            </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        # Collapse/expand icon button
+        if st.button("▼" if st.session_state[expand_key] else "▶", 
+                    key=f"assigned_expand-btn-{appt_id}",
+                    help="Expand/collapse details"):
+            st.session_state[expand_key] = not st.session_state[expand_key]
+            st.rerun()
+    
+    # Expanded content (only shown if expanded)
+    if st.session_state[expand_key]:
+        with st.container():
+            st.markdown(f"""
+            <div style="
+                border: 1px solid #e0e0e0;
+                border-top: none;
+                border-radius: 0 0 8px 8px;
+                padding: 12px;
+                margin-top: -8px;
+                margin-bottom: 12px;
+                background: white;
+            ">
+            """, unsafe_allow_html=True)
+            
+            # Show resource details and constraints
+            resource_details = get_resource_details(resource_name)
+            if resource_details:
+                display_resource_details(resource_details)
+                constraints = calculate_constraints(resource_name, location)
+                if constraints:
+                    st.markdown("**Current Constraints:**")
+                    display_constraints(constraints)
+            
+            # Unassign button
+            if st.button("Unassign", key=f"unassign_{appt_id}_w{week_num}"):
+                if unassign_resource_from_appointment(appt_id):
+                    st.success(f"Successfully unassigned {resource_name} from this appointment!")
+                    st.rerun()
+            
+            st.markdown("</div>", unsafe_allow_html=True)
                 
 def display_unassigned_tab(selected_location, selected_employment_type):
     """Displays the UI tab for handling unassigned appointments with enhanced header"""
@@ -1324,6 +1550,9 @@ def display_unassigned_tab(selected_location, selected_employment_type):
         unassigned_appointments = get_unassigned_appointments(selected_location)
         all_resources_df = get_all_resources(selected_employment_type)
         local_resources = get_resources_by_location(selected_location, selected_employment_type)
+        
+        # Get all assigned appointments for this location
+        assigned_appointments = get_all_assigned_appointments(selected_location)
     except Exception as e:
         st.error(f"""
         <div style="
@@ -1341,6 +1570,7 @@ def display_unassigned_tab(selected_location, selected_employment_type):
 
     # Enhanced header with professional styling
     unassigned_count = len(unassigned_appointments)
+    assigned_count = len(assigned_appointments)
     st.markdown(f"""
     <div style="
         background: linear-gradient(135deg, #ff6b6b, #ff8e8e);
@@ -1358,7 +1588,7 @@ def display_unassigned_tab(selected_location, selected_employment_type):
             gap: 10px;
         ">
             <span style="font-size: 1.5rem;">📅</span>
-            Unassigned Appointments at {selected_location}
+            Appointment Assignment at {selected_location}
         </div>
         <div style="
             font-size: 1rem;
@@ -1374,73 +1604,142 @@ def display_unassigned_tab(selected_location, selected_employment_type):
                 border-radius: 12px;
                 font-weight: 600;
                 font-size: 0.9rem;
-            ">{unassigned_count} appointment{'s' if unassigned_count != 1 else ''} need assignment</span>
+            ">{unassigned_count} unassigned</span>
+            <span style="
+                background: white;
+                color: #4CAF50;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-weight: 600;
+                font-size: 0.9rem;
+            ">{assigned_count} assigned</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    if unassigned_appointments.empty:
-        st.markdown("""
-        <div style="
-            text-align: center; 
-            padding: 40px; 
-            background-color: #e8f5e9; 
-            border-radius: 10px;
-            margin: 20px 0;
-        ">
-            <div style="font-size: 2rem;">🎉</div>
-            <div style="font-size: 1.2rem; font-weight: 600; margin-top: 10px;">
-                All appointments are assigned!
-            </div>
-            <div style="color: #666; margin-top: 5px;">
-                Great work! There are no unassigned shifts.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        return
-
-    # Week tabs
-    week_tab1, week_tab2 = st.tabs([
-        f"Week 1 ({unassigned_appointments[unassigned_appointments['Week'] == 1]['DayOfWeek'].nunique()} days)", 
-        f"Week 2 ({unassigned_appointments[unassigned_appointments['Week'] == 2]['DayOfWeek'].nunique()} days)"
-    ])
-
-    with week_tab1:
-        week_data = unassigned_appointments[unassigned_appointments['Week'] == 1]
-        if not week_data.empty:
-            display_week_with_enhanced_tabs(week_data, selected_location, all_resources_df, local_resources, 1)
-        else:
+    # Create tabs for Unassigned and Assigned appointments
+    tab_unassigned, tab_assigned = st.tabs(["Unassigned Appointments", "Assigned Appointments"])
+    
+    with tab_unassigned:
+        if unassigned_appointments.empty:
             st.markdown("""
             <div style="
                 text-align: center; 
-                padding: 30px; 
+                padding: 40px; 
+                background-color: #e8f5e9; 
+                border-radius: 10px;
+                margin: 20px 0;
+            ">
+                <div style="font-size: 2rem;">🎉</div>
+                <div style="font-size: 1.2rem; font-weight: 600; margin-top: 10px;">
+                    All appointments are assigned!
+                </div>
+                <div style="color: #666; margin-top: 5px;">
+                    Great work! There are no unassigned shifts.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            # Week tabs for unassigned
+            week_tab1, week_tab2 = st.tabs([
+                f"Week 1 ({unassigned_appointments[unassigned_appointments['Week'] == 1]['DayOfWeek'].nunique()} days)", 
+                f"Week 2 ({unassigned_appointments[unassigned_appointments['Week'] == 2]['DayOfWeek'].nunique()} days)"
+            ])
+
+            with week_tab1:
+                week_data = unassigned_appointments[unassigned_appointments['Week'] == 1]
+                if not week_data.empty:
+                    display_week_with_enhanced_tabs(week_data, selected_location, all_resources_df, local_resources, 1)
+                else:
+                    st.markdown("""
+                    <div style="
+                        text-align: center; 
+                        padding: 30px; 
+                        background-color: #f5f5f5; 
+                        border-radius: 10px;
+                        margin: 20px 0;
+                    ">
+                        <div style="font-size: 1.5rem;">📅</div>
+                        <div style="font-weight: 600;">No unassigned appointments in Week 1</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            with week_tab2:
+                week_data = unassigned_appointments[unassigned_appointments['Week'] == 2]
+                if not week_data.empty:
+                    display_week_with_enhanced_tabs(week_data, selected_location, all_resources_df, local_resources, 2)
+                else:
+                    st.markdown("""
+                    <div style="
+                        text-align: center; 
+                        padding: 30px; 
+                        background-color: #f5f5f5; 
+                        border-radius: 10px;
+                        margin: 20px 0;
+                    ">
+                        <div style="font-size: 1.5rem;">📅</div>
+                        <div style="font-weight: 600;">No unassigned appointments in Week 2</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+    
+    with tab_assigned:
+        if assigned_appointments.empty:
+            st.markdown("""
+            <div style="
+                text-align: center; 
+                padding: 40px; 
                 background-color: #f5f5f5; 
                 border-radius: 10px;
                 margin: 20px 0;
             ">
-                <div style="font-size: 1.5rem;">📅</div>
-                <div style="font-weight: 600;">No unassigned appointments in Week 1</div>
+                <div style="font-size: 2rem;">⚠️</div>
+                <div style="font-size: 1.2rem; font-weight: 600; margin-top: 10px;">
+                    No assigned appointments found
+                </div>
             </div>
             """, unsafe_allow_html=True)
-
-    with week_tab2:
-        week_data = unassigned_appointments[unassigned_appointments['Week'] == 2]
-        if not week_data.empty:
-            display_week_with_enhanced_tabs(week_data, selected_location, all_resources_df, local_resources, 2)
         else:
-            st.markdown("""
-            <div style="
-                text-align: center; 
-                padding: 30px; 
-                background-color: #f5f5f5; 
-                border-radius: 10px;
-                margin: 20px 0;
-            ">
-                <div style="font-size: 1.5rem;">📅</div>
-                <div style="font-weight: 600;">No unassigned appointments in Week 2</div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Week tabs for assigned
+            week_tab1, week_tab2 = st.tabs([
+                f"Week 1 ({assigned_appointments[assigned_appointments['Week'] == 1]['DayOfWeek'].nunique()} days)", 
+                f"Week 2 ({assigned_appointments[assigned_appointments['Week'] == 2]['DayOfWeek'].nunique()} days)"
+            ])
 
+            with week_tab1:
+                week_data = assigned_appointments[assigned_appointments['Week'] == 1]
+                if not week_data.empty:
+                    display_assigned_week(week_data, selected_location, 1)
+                else:
+                    st.markdown("""
+                    <div style="
+                        text-align: center; 
+                        padding: 30px; 
+                        background-color: #f5f5f5; 
+                        border-radius: 10px;
+                        margin: 20px 0;
+                    ">
+                        <div style="font-size: 1.5rem;">📅</div>
+                        <div style="font-weight: 600;">No assigned appointments in Week 1</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            with week_tab2:
+                week_data = assigned_appointments[assigned_appointments['Week'] == 2]
+                if not week_data.empty:
+                    display_assigned_week(week_data, selected_location, 2)
+                else:
+                    st.markdown("""
+                    <div style="
+                        text-align: center; 
+                        padding: 30px; 
+                        background-color: #f5f5f5; 
+                        border-radius: 10px;
+                        margin: 20px 0;
+                    ">
+                        <div style="font-size: 1.5rem;">📅</div>
+                        <div style="font-weight: 600;">No assigned appointments in Week 2</div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
 def display_week_with_enhanced_tabs(week_data, selected_location, all_resources_df, local_resources, week_num):
     """Displays the week with enhanced day tabs and appointment cards"""
@@ -1690,148 +1989,6 @@ def display_enhanced_appointment_card(row, selected_location, all_resources_df, 
             
             st.markdown("</div>", unsafe_allow_html=True)
 
-def display_reassign_tab(selected_location, selected_employment_type):
-    """Displays the UI tab for reassigning shifts between resources"""
-    st.markdown(f"""
-    <div style="
-        background: linear-gradient(135deg, #4b6cb7, #182848);
-        color: white;
-        padding: 16px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    ">
-        <div style="
-            font-size: 1.3rem;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        ">
-            <span style="font-size: 1.5rem;">🔄</span>
-            Reassign Shifts at {selected_location}
-        </div>
-        <div style="
-            font-size: 1rem;
-            margin-top: 8px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        ">
-            <span style="
-                background: white;
-                color: #4b6cb7;
-                padding: 4px 10px;
-                border-radius: 12px;
-                font-weight: 600;
-                font-size: 0.9rem;
-            ">Select a resource to view their assigned shifts</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Get all resources for this location
-    resources = get_resources_by_location(selected_location, selected_employment_type)
-    
-    if not resources:
-        st.warning(f"No resources found at {selected_location} with employment type {selected_employment_type}")
-        return
-    
-    # Select resource to view their shifts
-    selected_resource = st.selectbox(
-        "Select Resource to View Their Shifts:",
-        resources,
-        key="reassign_resource_select"
-    )
-    
-    if not selected_resource:
-        return
-    
-    # Get all appointments for this resource
-    appointments = get_appointments_by_resource_and_location(selected_resource, selected_location)
-    
-    if appointments.empty:
-        st.info(f"No shifts currently assigned to {selected_resource}")
-        return
-    
-    st.markdown(f"""
-    <div class="card">
-        <div class="card-header">
-            <span class="icon">📅</span> {selected_resource}'s Assigned Shifts at {selected_location}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Display resource details and constraints
-    resource_details = get_resource_details(selected_resource)
-    display_resource_details(resource_details)
-    display_resource_constraints(selected_resource, selected_location)
-    
-    # Group by week
-    week_tab1, week_tab2 = st.tabs([
-        f"Week 1 ({len(appointments[appointments['Week'] == 1])} shifts)",
-        f"Week 2 ({len(appointments[appointments['Week'] == 2])} shifts)"
-    ])
-    
-    def display_week_shifts(week_num):
-        week_data = appointments[appointments['Week'] == week_num]
-        
-        if week_data.empty:
-            st.info(f"No shifts in Week {week_num}")
-            return
-        
-        # Display each shift with unassign/reassign options
-        for _, row in week_data.iterrows():
-            appt_id = row['AppointmentID']
-            
-            with st.expander(f"{row['DisplayStart']} - {row['DurationHours']:.1f}h ({row['Participant']})"):
-                col1, col2 = st.columns([0.7, 0.3])
-                
-                with col1:
-                    st.markdown(f"""
-                    <div style="margin-bottom: 10px;">
-                        <div style="font-weight: bold;">{row['Name']}</div>
-                        <div>{row['DisplayStart']} to {row['DisplayEnd']}</div>
-                        <div>Duration: {row['DurationHours']:.1f} hours</div>
-                        <div>Participant: {row['Participant']}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col2:
-                    # Unassign button
-                    if st.button("Unassign", key=f"unassign_{appt_id}"):
-                        if unassign_resource_from_appointment(appt_id):
-                            st.success(f"Shift unassigned from {selected_resource}")
-                            st.rerun()
-                
-                # Reassign section
-                st.markdown("---")
-                st.markdown("**Reassign to another resource:**")
-                
-                # Get available resources (excluding current one)
-                available_resources = [r for r in resources if r != selected_resource]
-                
-                if not available_resources:
-                    st.warning("No other resources available at this location")
-                    return
-                
-                new_resource = st.selectbox(
-                    "Select New Resource:",
-                    available_resources,
-                    key=f"reassign_select_{appt_id}"
-                )
-                
-                if st.button("Reassign", key=f"reassign_btn_{appt_id}"):
-                    if assign_resource_to_appointment(appt_id, new_resource):
-                        st.success(f"Shift reassigned from {selected_resource} to {new_resource}")
-                        st.rerun()
-    
-    with week_tab1:
-        display_week_shifts(1)
-    
-    with week_tab2:
-        display_week_shifts(2)
-
 def unassign_resource_from_appointment(appointment_id):
     """Unassigns a resource from an appointment"""
     try:
@@ -1963,8 +2120,8 @@ def main():
                 st.rerun()
 
         # Main tabs
-        tab_assigned, tab_unassigned, tab_reassign = st.tabs(
-            ["Assigned Shifts", "Unassigned Shifts", "Reassign Shifts"]
+        tab_assigned, tab_unassigned = st.tabs(
+            ["View Shifts Calender", "Assign and Unassigned Shifts"]
         )
         
         with tab_assigned:
@@ -1976,12 +2133,6 @@ def main():
         
         with tab_unassigned:
             display_unassigned_tab(
-                st.session_state.selected_location,
-                st.session_state.selected_employment_type
-            )
-            
-        with tab_reassign:
-            display_reassign_tab(
                 st.session_state.selected_location,
                 st.session_state.selected_employment_type
             )
