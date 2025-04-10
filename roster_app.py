@@ -21,7 +21,7 @@ def load_css():
 load_css()
 
 # Database configuration
-DB_SERVER = "0.tcp.in.ngrok.io"
+DB_SERVER = "0.tcp.ap.ngrok.io"
 DB_PORT = "19580"  # <- updated to the new port from ngrok
 
 DB_NAME = "RosterManagement"
