@@ -49,7 +49,7 @@ def db_connection():
 # Special locations mapping
 SPECIAL_LOCATIONS = {
     "thomas street": "Thomas Street, Wollongong",
-    "albert street": "Albert Street, Erskineville",
+    "albert street": "Albert Street, Erskinville",
     "cecil street": "Cecil Street, Guildford",
     "charles street": "Charles Street, Liverpool",
     "cope street": "Cope Street, Redfern",
@@ -593,25 +593,10 @@ def assign_resource_to_appointment(appointment_id, resource_name):
 
                 # Clear relevant caches after successful update
                 st.cache_data.clear() # Consider more targeted cache clearing if possible
-                st.markdown(
-                    f"""
-                    <div style="
-                        background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
-                        border-left: 6px solid #4CAF50;
-                        border-radius: 8px;
-                        padding: 1rem 1.25rem;
-                        margin: 1rem 0;
-                        box-shadow: 0 4px 12px rgba(76, 175, 80, 0.15);
-                        color: #2e7d32;
-                        font-weight: 600;
-                        display: flex;
-                        align-items: center;
-                    ">
-                        ✅ Successfully assigned <strong>{resource_name}</strong> to this appointment!
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+
+                # Show success message with balloons animation
+                st.balloons()
+                st.success(f"✅ Successfully assigned {resource_name} to this appointment!")
                 return True
 
     except Exception as e:
@@ -1554,31 +1539,8 @@ def display_assigned_appointment_card(row, location, week_num):
             # Unassign button
             if st.button("Unassign", key=f"unassign_{appt_id}_w{week_num}"):
                 if unassign_resource_from_appointment(appt_id):
-                    st.markdown(
-                        f"""
-                        <div id="unassign-success" style="
-                            background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
-                            border-left: 6px solid #4CAF50;
-                            border-radius: 8px;
-                            padding: 1rem 1.25rem;
-                            margin: 1rem 0;
-                            box-shadow: 0 4px 12px rgba(76, 175, 80, 0.15);
-                            color: #2e7d32;
-                            font-weight: 600;
-                            display: flex;
-                            align-items: center;
-                        ">
-                            ✅ Successfully unassigned {resource_name} from this appointment!
-                        </div>
-                        <script>
-                            setTimeout(function() {{
-                                var el = document.getElementById('unassign-success');
-                                if (el) {{ el.style.display = 'none'; }}
-                            }}, 3000);
-                        </script>
-                        """,
-                        unsafe_allow_html=True
-                    )
+                    st.success(f"Successfully unassigned {resource_name} from this appointment!")
+                    st.rerun()
             
             st.markdown("</div>", unsafe_allow_html=True)
                 
@@ -2016,13 +1978,8 @@ def display_enhanced_appointment_card(row, selected_location, all_resources_df, 
                                 )
                                 if is_valid:
                                     if assign_resource_to_appointment(appt_id, determined_selection):
-                                        st.session_state.just_assigned_shift = True  # ✅ trigger confirmation in main()
-                                        st.session_state.last_assigned = {
-                                            "appt_id": appt_id,
-                                            "resource": determined_selection,
-                                            "week": week_num
-                                        }
-                                        # ✅ No rerun, message will be shown in main()
+                                        st.success(f"✅ Successfully assigned {determined_selection}!")
+                                        st.rerun()
                                 else:
                                     st.error(message)
                             
@@ -2063,66 +2020,60 @@ def unassign_resource_from_appointment(appointment_id):
                              
 def main():
     # Initialize session state
-    st.session_state.setdefault("selected_location", None)
-    st.session_state.setdefault("selected_resource", None)
-    st.session_state.setdefault("selected_employment_type", "All")
-    st.session_state.setdefault("active_tab", "Unassigned")
-    st.session_state.setdefault("just_assigned_shift", False)  # NEW: Flag for assignment message
+    if 'selected_location' not in st.session_state:
+        st.session_state.selected_location = None
+    if 'selected_resource' not in st.session_state:
+        st.session_state.selected_resource = None
+    if 'selected_employment_type' not in st.session_state:
+        st.session_state.selected_employment_type = 'All'
 
     # Sidebar with filters
     with st.sidebar:
+        # Logo at the very top (smaller size)
         st.image("image.png", width=100)
+    
+        # Container for proper spacing
         st.markdown('<div class="sidebar-header-container">', unsafe_allow_html=True)
+        
+        # Filters section
         st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem;">FILTERS</div>', unsafe_allow_html=True)
-
-        # Locations and participants
+        
+        
+        # Get locations with participant names for display
         location_options = get_locations_with_participants()
+        
+        # Create options for selectbox
         options = [loc['display_name'] for loc in location_options]
-
-        selected_display = st.selectbox("Select Roster:", options, key="location_selectbox")
-        selected_location = next((loc['location'] for loc in location_options if loc['display_name'] == selected_display), None)
-
+        
+        # Show participant names in dropdown
+        selected_display = st.selectbox(
+            "Select Roster:", 
+            options=options,
+            key="location_selectbox"
+        )
+        
+        # Find the corresponding actual location
+        selected_location = None
+        for loc in location_options:
+            if loc['display_name'] == selected_display:
+                selected_location = loc['location']
+                break
+        
+        # Update session state when location changes
         if selected_location and selected_location != st.session_state.selected_location:
             st.session_state.selected_location = selected_location
-            st.session_state.selected_resource = None
+            st.session_state.selected_resource = None  # Reset resource selection
+            st.rerun()
+            
+            st.markdown('</div>', unsafe_allow_html=True)  # Close spacing container
+            
+            st.markdown("""
+                    <div class="sidebar-footer">
+                        Project Nahl - Powered by Data Science Team
+                    </div>
+                    """, unsafe_allow_html=True)
 
-        # Employment type filter
-        if st.session_state.selected_location:
-            resource_counts = get_resource_counts_by_location(st.session_state.selected_location)
-            counts_dict = dict(zip(resource_counts['employmentType'], resource_counts['resource_count']))
-            total_resources = sum(counts_dict.values())
-
-            employment_types = ['All', 'Full Time', 'Part Time', 'Casual']
-            labels_with_counts = [
-                f"All ({total_resources})",
-                f"Full Time ({counts_dict.get('Full Time', 0)})",
-                f"Part Time ({counts_dict.get('Part Time', 0)})",
-                f"Casual ({counts_dict.get('Casual', 0)})"
-            ]
-            type_mapping = dict(zip(labels_with_counts, employment_types))
-
-            selected_label = st.selectbox(
-                "Filter by Employment Type:",
-                labels_with_counts,
-                index=employment_types.index(st.session_state.selected_employment_type),
-                key="employment_type_filter"
-            )
-
-            employment_type = type_mapping[selected_label]
-            if employment_type != st.session_state.selected_employment_type:
-                st.session_state.selected_employment_type = employment_type
-                st.session_state.selected_resource = None
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # Footer (moved to the bottom of the sidebar with CSS)
-        st.markdown("""
-        <div class="sidebar-footer">
-            <p>Project Nahl - Powered by Data Science Team</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # Main card
+    # Main content
     st.markdown("""
     <div class="card">
         <div class="card-header">
@@ -2132,51 +2083,59 @@ def main():
     """, unsafe_allow_html=True)
 
     if st.session_state.selected_location:
-        # Tab selection controlled by session state using buttons
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("📅 View Shifts Calender"):
-                st.session_state.active_tab = "Assigned"
-        with col2:
-            if st.button("📝 Assign and Unassigned Shifts"):
-                st.session_state.active_tab = "Unassigned"
-
-        # Show confirmation message if shift was just assigned
-        if st.session_state.just_assigned_shift:
-            st.markdown(
-                """
-                <div style="
-                    background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
-                    border-left: 6px solid #4CAF50;
-                    border-radius: 8px;
-                    padding: 1rem 1.25rem;
-                    margin: 1rem 0;
-                    box-shadow: 0 4px 12px rgba(76, 175, 80, 0.15);
-                    color: #2e7d32;
-                    font-weight: 600;
-                    display: flex;
-                    align-items: center;
-                ">
-                    ✅ Shift assigned successfully.
-                </div>
-                """,
-                unsafe_allow_html=True
+        # Get resource counts by type
+        resource_counts = get_resource_counts_by_location(st.session_state.selected_location)
+        
+        # Convert to dictionary for easy access
+        counts_dict = dict(zip(resource_counts['employmentType'], resource_counts['resource_count']))
+        total_resources = sum(counts_dict.values())
+        
+        # Create labels with counts
+        employment_types = ['All', 'Full Time', 'Part Time', 'Casual']
+        labels_with_counts = [
+            f"All ({total_resources})",
+            f"Full Time ({counts_dict.get('Full Time', 0)})",
+            f"Part Time ({counts_dict.get('Part Time', 0)})",
+            f"Casual ({counts_dict.get('Casual', 0)})"
+        ]
+        
+        # Create mapping between display labels and actual values
+        type_mapping = dict(zip(labels_with_counts, employment_types))
+        
+        # Show selectbox with counts in sidebar
+        with st.sidebar:
+            selected_label = st.selectbox(
+                "Filter by Employment Type:", 
+                labels_with_counts,
+                index=0,  # Default to 'All'
+                key="employment_type_filter"
             )
-            st.session_state.just_assigned_shift = False  # Reset flag
+            
+            # Get the actual employment type value
+            employment_type = type_mapping[selected_label]
+            
+            if employment_type != st.session_state.selected_employment_type:
+                st.session_state.selected_employment_type = employment_type
+                st.session_state.selected_resource = None
+                st.rerun()
 
-        # Show selected tab
-        if st.session_state.active_tab == "Assigned":
+        # Main tabs
+        tab_assigned, tab_unassigned = st.tabs(
+            ["View Shifts Calender", "Assign and Unassigned Shifts"]
+        )
+        
+        with tab_assigned:
             display_assigned_tab(
                 st.session_state.selected_location,
                 st.session_state.selected_employment_type,
                 st.session_state.selected_resource
             )
-        else:
+        
+        with tab_unassigned:
             display_unassigned_tab(
                 st.session_state.selected_location,
                 st.session_state.selected_employment_type
             )
-
 
 if __name__ == "__main__":
     main()
